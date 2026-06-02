@@ -1,0 +1,1582 @@
+// ── Imports ──────────────────────────────────────────────────────────────────
+import './style.css';
+
+// ── State Management ─────────────────────────────────────────────────────────
+const state = {
+  currentScreen: 'chat',
+  theme: localStorage.getItem('theme') || 'light',
+  
+  // Goals & Profile
+  hasCompletedOnboarding: JSON.parse(localStorage.getItem('hasCompletedOnboarding') || 'false'),
+  dailyCalorieGoal: JSON.parse(localStorage.getItem('dailyCalorieGoal') || '2000'),
+  carbsPercent: JSON.parse(localStorage.getItem('carbsPercent') || '50'),
+  proteinPercent: JSON.parse(localStorage.getItem('proteinPercent') || '25'),
+  fatPercent: JSON.parse(localStorage.getItem('fatPercent') || '25'),
+  
+  currentWeightKg: JSON.parse(localStorage.getItem('currentWeightKg') || '80'),
+  targetWeightKg: JSON.parse(localStorage.getItem('targetWeightKg') || '70'),
+  heightCm: JSON.parse(localStorage.getItem('heightCm') || '170'),
+  age: JSON.parse(localStorage.getItem('age') || '25'),
+  isMale: JSON.parse(localStorage.getItem('isMale') || 'true'),
+  weightGoal: localStorage.getItem('weightGoal') || 'lose',
+  aggression: localStorage.getItem('aggression') || 'moderate',
+  
+  // Onboarding Wizard step
+  onboardingStep: 0,
+  onboardingData: {
+    gender: 'Male',
+    age: '',
+    height: '',
+    weight: '',
+    goal: 'Lose',
+    aggression: 'Moderate',
+    targetWeight: ''
+  },
+
+  // Reminders
+  morningEnabled: JSON.parse(localStorage.getItem('morningEnabled') || 'true'),
+  morningTime: localStorage.getItem('morningTime') || '09:00',
+  afternoonEnabled: JSON.parse(localStorage.getItem('afternoonEnabled') || 'true'),
+  afternoonTime: localStorage.getItem('afternoonTime') || '13:00',
+  eveningEnabled: JSON.parse(localStorage.getItem('eveningEnabled') || 'true'),
+  eveningTime: localStorage.getItem('eveningTime') || '19:00',
+
+  // Config
+  apiKey: localStorage.getItem('geminiApiKey') || '',
+
+  // Selected Chat Date
+  selectedDateStr: getLocalDateString(new Date()),
+
+  // Database lists (stored in localStorage)
+  foodEntries: JSON.parse(localStorage.getItem('foodEntries') || '[]'),
+  exerciseEntries: JSON.parse(localStorage.getItem('exerciseEntries') || '[]'),
+  weightEntries: JSON.parse(localStorage.getItem('weightEntries') || '[]'),
+  chatMessages: JSON.parse(localStorage.getItem('chatMessages') || '[]'),
+  
+  isProcessingChat: false,
+  isSidebarOpen: false
+};
+
+// Ensure default weight entries exist if empty
+if (state.weightEntries.length === 0) {
+  state.weightEntries = [
+    { id: 1, weightKg: state.currentWeightKg, timestamp: Date.now() - 3 * 24 * 60 * 60 * 1000 },
+    { id: 2, weightKg: state.currentWeightKg - 0.5, timestamp: Date.now() }
+  ];
+  saveStateToStorage();
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function getLocalDateString(date) {
+  const offset = date.getTimezoneOffset();
+  const localDate = new Date(date.getTime() - offset * 60 * 1000);
+  return localDate.toISOString().split('T')[0];
+}
+
+function saveStateToStorage() {
+  localStorage.setItem('hasCompletedOnboarding', JSON.stringify(state.hasCompletedOnboarding));
+  localStorage.setItem('dailyCalorieGoal', JSON.stringify(state.dailyCalorieGoal));
+  localStorage.setItem('carbsPercent', JSON.stringify(state.carbsPercent));
+  localStorage.setItem('proteinPercent', JSON.stringify(state.proteinPercent));
+  localStorage.setItem('fatPercent', JSON.stringify(state.fatPercent));
+  localStorage.setItem('currentWeightKg', JSON.stringify(state.currentWeightKg));
+  localStorage.setItem('targetWeightKg', JSON.stringify(state.targetWeightKg));
+  localStorage.setItem('heightCm', JSON.stringify(state.heightCm));
+  localStorage.setItem('age', JSON.stringify(state.age));
+  localStorage.setItem('isMale', JSON.stringify(state.isMale));
+  localStorage.setItem('weightGoal', state.weightGoal);
+  localStorage.setItem('aggression', state.aggression);
+  
+  localStorage.setItem('morningEnabled', JSON.stringify(state.morningEnabled));
+  localStorage.setItem('morningTime', state.morningTime);
+  localStorage.setItem('afternoonEnabled', JSON.stringify(state.afternoonEnabled));
+  localStorage.setItem('afternoonTime', state.afternoonTime);
+  localStorage.setItem('eveningEnabled', JSON.stringify(state.eveningEnabled));
+  localStorage.setItem('eveningTime', state.eveningTime);
+  
+  localStorage.setItem('geminiApiKey', state.apiKey);
+  localStorage.setItem('foodEntries', JSON.stringify(state.foodEntries));
+  localStorage.setItem('exerciseEntries', JSON.stringify(state.exerciseEntries));
+  localStorage.setItem('weightEntries', JSON.stringify(state.weightEntries));
+  localStorage.setItem('chatMessages', JSON.stringify(state.chatMessages));
+}
+
+// Initialize theme
+document.documentElement.setAttribute('data-theme', state.theme);
+
+// ── Gemini Integration ───────────────────────────────────────────────────────
+const SYSTEM_PROMPT = `
+You are a conversational health parser. Extract structured food or exercise details and return ONLY a valid raw JSON object. Do not include markdown code fences, extra text, or formatting.
+
+If the input describes food, return:
+{"type": "food", "items": [{"name": "Food Item Name", "calories": 250, "protein_g": 20.0, "carbs_g": 30.0, "fat_g": 5.0}]}
+
+If the input describes exercise, return:
+{"type": "exercise", "items": [{"name": "Workout Description", "duration_minutes": 30, "calories_burned": 240}]}
+
+Rules:
+- Estimate realistic numbers based on general science if exact weights are omitted.
+- Support multiple items in one go (e.g. "2 eggs and toast" -> items array with two objects).
+- Return ONLY the exact JSON, with absolutely no packaging or explainers.
+`;
+
+async function parseInputWithGemini(userText) {
+  if (!state.apiKey) {
+    // Simulated mock parser if no API Key entered
+    return simulateMockParsing(userText);
+  }
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${state.apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `${SYSTEM_PROMPT}\n\nUser input: ${userText}` }] }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1024,
+          responseMimeType: "application/json"
+        }
+      })
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    const rawJsonStr = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+    return JSON.parse(rawJsonStr);
+  } catch (err) {
+    console.error(err);
+    return { type: "error", message: `AI connection failed: ${err.message}` };
+  }
+}
+
+function simulateMockParsing(text) {
+  const lower = text.toLowerCase();
+  
+  if (lower.includes('egg') || lower.includes('chicken') || lower.includes('rice') || lower.includes('banana') || lower.includes('shake') || lower.includes('toast') || lower.includes('apple') || lower.includes('salad') || lower.includes('coffee')) {
+    const items = [];
+    if (lower.includes('egg')) items.push({ name: "Scrambled Eggs (2)", calories: 140, protein_g: 12, carbs_g: 1, fat_g: 10 });
+    if (lower.includes('chicken')) items.push({ name: "Grilled Chicken Breast (150g)", calories: 220, protein_g: 40, carbs_g: 0, fat_g: 5 });
+    if (lower.includes('rice')) items.push({ name: "White Cooked Rice (1 cup)", calories: 200, protein_g: 4, carbs_g: 44, fat_g: 0.5 });
+    if (lower.includes('banana')) items.push({ name: "Large Banana", calories: 105, protein_g: 1.3, carbs_g: 27, fat_g: 0.3 });
+    if (lower.includes('toast')) items.push({ name: "Whole Wheat Toast (1 slice)", calories: 80, protein_g: 3, carbs_g: 15, fat_g: 1 });
+    if (lower.includes('shake')) items.push({ name: "Whey Protein Shake", calories: 160, protein_g: 25, carbs_g: 3, fat_g: 2 });
+    if (items.length === 0) {
+      items.push({ name: text, calories: 180, protein_g: 10, carbs_g: 25, fat_g: 4 });
+    }
+    return { type: "food", items };
+  }
+  
+  if (lower.includes('run') || lower.includes('walk') || lower.includes('jog') || lower.includes('swim') || lower.includes('workout') || lower.includes('cycle') || lower.includes('gym')) {
+    const items = [];
+    if (lower.includes('run') || lower.includes('jog')) items.push({ name: "Outdoor Jogging", duration_minutes: 30, calories_burned: 320 });
+    if (lower.includes('walk')) items.push({ name: "Power Walking", duration_minutes: 45, calories_burned: 180 });
+    if (lower.includes('swim')) items.push({ name: "Laps Swimming", duration_minutes: 30, calories_burned: 280 });
+    if (lower.includes('gym') || lower.includes('workout')) items.push({ name: "Resistance Strength Training", duration_minutes: 60, calories_burned: 240 });
+    if (items.length === 0) {
+      items.push({ name: text, duration_minutes: 30, calories_burned: 200 });
+    }
+    return { type: "exercise", items };
+  }
+
+  return { type: "unknown", message: "I couldn't identify any specific food or exercise in your message. Enter a Gemini Key in Settings to get real-time AI capabilities!" };
+}
+
+// ── Application Core Render Flow ─────────────────────────────────────────────
+function appLayoutTemplate() {
+  return `
+    <!-- Onboarding overlay -->
+    ${!state.hasCompletedOnboarding ? onboardingOverlayTemplate() : ''}
+
+    <!-- Collapsible sidebar -->
+    <aside id="sidebar" class="${state.isSidebarOpen ? 'drawer-open' : ''}">
+      <div class="brand">
+        <i data-lucide="spa"></i>
+        <span>Daywise</span>
+      </div>
+      <ul class="drawer-menu">
+        <li class="drawer-item ${state.currentScreen === 'chat' ? 'active' : ''}" data-target="chat">
+          <a href="#"><i data-lucide="message-square"></i>Track Chat</a>
+        </li>
+        <li class="drawer-item ${state.currentScreen === 'weekly_summary' ? 'active' : ''}" data-target="weekly_summary">
+          <a href="#"><i data-lucide="bar-chart-2"></i>Weekly Summary</a>
+        </li>
+        <li class="drawer-item ${state.currentScreen === 'weight_tracker' ? 'active' : ''}" data-target="weight_tracker">
+          <a href="#"><i data-lucide="monitor-weight"></i>Weight Tracker</a>
+        </li>
+        <li class="drawer-item ${state.currentScreen === 'daily_goals' ? 'active' : ''}" data-target="daily_goals">
+          <a href="#"><i data-lucide="flag"></i>Daily Goals</a>
+        </li>
+        <li class="drawer-item ${state.currentScreen === 'reminders' ? 'active' : ''}" data-target="reminders">
+          <a href="#"><i data-lucide="notifications"></i>Reminders</a>
+        </li>
+        <li class="drawer-item ${state.currentScreen === 'settings' ? 'active' : ''}" data-target="settings">
+          <a href="#"><i data-lucide="settings"></i>Settings</a>
+        </li>
+      </ul>
+      <div class="drawer-footer">
+        <div style="font-size: 0.8rem; opacity: 0.6; text-align: center;">Daywise Web Preview v1.0</div>
+      </div>
+    </aside>
+
+    <!-- Main Container -->
+    <main>
+      <header>
+        <div class="header-left">
+          <button class="menu-toggle" id="btn-toggle-sidebar">
+            <i data-lucide="menu"></i>
+          </button>
+          <h2 style="font-size: 1.25rem;">${getScreenTitle()}</h2>
+        </div>
+        <div class="header-right">
+          <button class="icon-btn" id="btn-theme-toggle" title="Toggle Light/Dark Theme">
+            <i data-lucide="${state.theme === 'light' ? 'moon' : 'sun'}"></i>
+          </button>
+        </div>
+      </header>
+      
+      <!-- Screen content wrapper -->
+      <div class="screen-content" id="screen-body">
+        ${renderScreenContent()}
+      </div>
+    </main>
+  `;
+}
+
+function getScreenTitle() {
+  switch (state.currentScreen) {
+    case 'chat': return 'Health Tracker Chat';
+    case 'weekly_summary': return 'Weekly Report';
+    case 'weight_tracker': return 'Weight Tracker';
+    case 'daily_goals': return 'Daily Targets';
+    case 'reminders': return 'Log Reminders';
+    case 'settings': return 'App Configurations';
+    default: return 'Daywise';
+  }
+}
+
+function renderScreenContent() {
+  switch (state.currentScreen) {
+    case 'chat': return renderChatScreen();
+    case 'weekly_summary': return renderWeeklyScreen();
+    case 'weight_tracker': return renderWeightScreen();
+    case 'daily_goals': return renderGoalsScreen();
+    case 'reminders': return renderRemindersScreen();
+    case 'settings': return renderSettingsScreen();
+    default: return '';
+  }
+}
+
+// ── Onboarding Screen ────────────────────────────────────────────────────────
+function onboardingOverlayTemplate() {
+  const step = state.onboardingStep;
+  const data = state.onboardingData;
+  const progressPercent = (step / 5) * 100;
+
+  // Mifflin-St Jeor Calculation BMR & target calories
+  const weight = parseFloat(data.weight) || 0;
+  const height = parseFloat(data.height) || 0;
+  const age = parseInt(data.age) || 0;
+  
+  let bmr = 0;
+  if (weight > 0 && height > 0 && age > 0) {
+    const base = 10 * weight + 6.25 * height - 5 * age;
+    bmr = data.gender === 'Male' ? Math.round(base + 5) : Math.round(base - 161);
+  }
+  const tdee = Math.round(bmr * 1.55); // Moderate activity default
+  
+  let calorieAdjustment = 0;
+  if (data.goal === 'Lose') {
+    calorieAdjustment = data.aggression === 'Relaxed' ? -275 : data.aggression === 'Moderate' ? -550 : -1100;
+  } else if (data.goal === 'Gain') {
+    calorieAdjustment = data.aggression === 'Relaxed' ? 275 : data.aggression === 'Moderate' ? 550 : 1100;
+  }
+  const targetCalories = Math.max(1200, tdee + calorieAdjustment);
+
+  const proteinG = Math.round((targetCalories * 0.25) / 4);
+  const carbsG = Math.round((targetCalories * 0.50) / 4);
+  const fatG = Math.round((targetCalories * 0.25) / 9);
+
+  return `
+    <div class="onboarding-overlay">
+      <div class="onboarding-box">
+        <div class="onboarding-progress">
+          <div class="onboarding-progress-fill" style="width: ${progressPercent}%"></div>
+        </div>
+
+        ${step === 0 ? `
+          <div class="onboarding-welcome">
+            <i data-lucide="spa"></i>
+            <h2>Welcome to Daywise</h2>
+            <p>Let's set up your personalized health and nutrition targets with a quick onboarding quiz!</p>
+          </div>
+        ` : ''}
+
+        ${step === 1 ? `
+          <div class="onboarding-step">
+            <h3>Tell us about yourself</h3>
+            <p style="font-size: 0.85rem; color: var(--on-surface-variant)">Used for BMI and Calorie target recommendations</p>
+            
+            <div class="form-group">
+              <label>Biological Gender</label>
+              <div class="gender-select">
+                <div class="selectable-card ${data.gender === 'Male' ? 'selected' : ''}" data-gender="Male">
+                  <span class="card-title">Male</span>
+                </div>
+                <div class="selectable-card ${data.gender === 'Female' ? 'selected' : ''}" data-gender="Female">
+                  <span class="card-title">Female</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Age (years)</label>
+              <input type="number" id="ob-age" class="input-style" placeholder="e.g. 25" value="${data.age}" />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Height (cm)</label>
+                <input type="number" id="ob-height" class="input-style" placeholder="e.g. 175" value="${data.height}" />
+              </div>
+              <div class="form-group">
+                <label>Current Weight (kg)</label>
+                <input type="number" id="ob-weight" class="input-style" placeholder="e.g. 78" value="${data.weight}" />
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${step === 2 ? `
+          <div class="onboarding-step">
+            <h3>What's your primary goal?</h3>
+            <div class="goal-select">
+              <div class="selectable-card ${data.goal === 'Lose' ? 'selected' : ''}" data-goal="Lose">
+                <span class="card-title">🔻 Lose Weight</span>
+                <span class="card-desc">Achieve safe, gradual weight reduction</span>
+              </div>
+              <div class="selectable-card ${data.goal === 'Maintain' ? 'selected' : ''}" data-goal="Maintain">
+                <span class="card-title">⚖️ Maintain Weight</span>
+                <span class="card-desc">Keep current weight and body composition</span>
+              </div>
+              <div class="selectable-card ${data.goal === 'Gain' ? 'selected' : ''}" data-goal="Gain">
+                <span class="card-title">🔺 Gain Weight</span>
+                <span class="card-desc">Support clean muscle and mass gain</span>
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${step === 3 ? `
+          <div class="onboarding-step">
+            <h3>How aggressive is your goal?</h3>
+            <div class="aggression-select">
+              <div class="selectable-card ${data.aggression === 'Relaxed' ? 'selected' : ''}" data-aggression="Relaxed">
+                <span class="card-title">Relaxed</span>
+                <span class="card-desc">0.25 kg weight adjustment per week</span>
+              </div>
+              <div class="selectable-card ${data.aggression === 'Moderate' ? 'selected' : ''}" data-aggression="Moderate">
+                <span class="card-title">Moderate</span>
+                <span class="card-desc">0.50 kg weight adjustment per week</span>
+              </div>
+              <div class="selectable-card ${data.aggression === 'Aggressive' ? 'selected' : ''}" data-aggression="Aggressive">
+                <span class="card-title">Aggressive</span>
+                <span class="card-desc">1.00 kg weight adjustment per week</span>
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${step === 4 ? `
+          <div class="onboarding-step">
+            <h3>Set your target weight</h3>
+            
+            <div class="bmi-badge-box">
+              <div class="bmi-row"><span>Current Weight</span> <span>${weight} kg</span></div>
+              <div class="bmi-row bold"><span>Current BMI</span> <span>${weight && height ? (weight / ((height/100)*(height/100))).toFixed(1) : '—'}</span></div>
+            </div>
+
+            <div class="form-group">
+              <label>Target weight (kg)</label>
+              <input type="number" id="ob-target" class="input-style" placeholder="e.g. 70" value="${data.targetWeight}" />
+            </div>
+          </div>
+        ` : ''}
+
+        ${step === 5 ? `
+          <div class="onboarding-step">
+            <h3>Your Personalized Plan</h3>
+            <p style="font-size: 0.85rem; color: var(--on-surface-variant)">Calculated via metabolic equations tailored to you</p>
+            
+            <div class="results-calorie-card">
+              <i data-lucide="flame"></i>
+              <div class="results-calorie-val">${targetCalories}</div>
+              <div style="font-size: 0.9rem; font-weight: 600;">Daily Calorie Goal (kcal)</div>
+            </div>
+
+            <div class="bmi-badge-box" style="background-color: var(--surface-variant)">
+              <div class="bmi-row bold" style="color: var(--primary);"><span>🥩 Protein Goal</span> <span>${proteinG}g (25%)</span></div>
+              <div class="bmi-row bold" style="color: var(--color-carbs);"><span>🍞 Carbs Goal</span> <span>${carbsG}g (50%)</span></div>
+              <div class="bmi-row bold" style="color: var(--color-fat);"><span>🥑 Fat Goal</span> <span>${fatG}g (25%)</span></div>
+            </div>
+
+            <div style="font-size: 0.85rem; opacity: 0.7; text-align: center;">
+              BMR: ${bmr} kcal &nbsp;·&nbsp; TDEE: ${tdee} kcal
+            </div>
+          </div>
+        ` : ''}
+
+        <div class="onboarding-nav">
+          ${step > 0 ? `
+            <button class="btn-style secondary" id="btn-ob-prev">Back</button>
+          ` : ''}
+          <button class="btn-style primary" id="btn-ob-next">
+            ${step === 0 ? 'Get Started' : step === 5 ? 'Start Tracking' : 'Continue'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Chat Screen UI ───────────────────────────────────────────────────────────
+function renderChatScreen() {
+  const summary = getDailyNutritionSummary(state.selectedDateStr);
+  const activeDate = parseLocalDate(state.selectedDateStr);
+  
+  // Calculate goals based on percentages
+  const carbsGoalG = Math.round((state.dailyCalorieGoal * state.carbsPercent / 100) / 4);
+  const proteinGoalG = Math.round((state.dailyCalorieGoal * state.proteinPercent / 100) / 4);
+  const fatGoalG = Math.round((state.dailyCalorieGoal * state.fatPercent / 100) / 9);
+
+  const overviewData = {
+    caloriesConsumed: summary.totalCalories,
+    calorieGoal: state.dailyCalorieGoal,
+    proteinCurrent: summary.totalProtein,
+    proteinGoal: proteinGoalG,
+    carbsCurrent: summary.totalCarbs,
+    carbsGoal: carbsGoalG,
+    fatCurrent: summary.totalFat,
+    fatGoal: fatGoalG,
+    exerciseCalories: summary.exerciseCalories
+  };
+
+  const ringProgress = state.dailyCalorieGoal > 0 ? (summary.totalCalories / state.dailyCalorieGoal).toFixed(3) : 0;
+  const radius = 50;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (Math.min(1, ringProgress) * circumference);
+
+  const activeMessages = state.chatMessages.filter(m => m.dateStr === state.selectedDateStr);
+  const activeFoods = state.foodEntries.filter(f => f.dateStr === state.selectedDateStr);
+  const activeExercises = state.exerciseEntries.filter(e => e.dateStr === state.selectedDateStr);
+
+  return `
+    <div class="chat-container">
+      <!-- Calendar strip selector -->
+      ${renderCalendarStrip(activeDate)}
+
+      <!-- Dashboard stats summary -->
+      <div class="overview-grid">
+        <div class="calorie-ring-box">
+          <svg>
+            <circle class="track" cx="60" cy="60" r="50"></circle>
+            <circle class="fill" cx="60" cy="60" r="50" stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
+          </svg>
+          <div class="calorie-ring-center">
+            <span class="ring-num">${summary.totalCalories}</span>
+            <span class="ring-goal">/ ${state.dailyCalorieGoal} kcal</span>
+            <span class="ring-left">${Math.max(0, state.dailyCalorieGoal - summary.totalCalories + summary.exerciseCalories)} left</span>
+          </div>
+        </div>
+
+        <div class="macro-bars">
+          ${renderMacroBar("Protein", summary.totalProtein, proteinGoalG, "g", "var(--color-protein)")}
+          ${renderMacroBar("Carbs", summary.totalCarbs, carbsGoalG, "g", "var(--color-carbs)")}
+          ${renderMacroBar("Fat", summary.totalFat, fatGoalG, "g", "var(--color-fat)")}
+        </div>
+
+        ${summary.exerciseCalories > 0 ? `
+          <div class="exercise-summary">
+            <i data-lucide="directions-run"></i>
+            <span>${summary.exerciseCalories} kcal burned from workouts</span>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Messages View -->
+      <div class="chat-messages" id="chat-scroller">
+        ${activeMessages.length === 0 ? `
+          <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0.5; text-align: center; gap: 8px;">
+            <i data-lucide="message-square" style="width: 48px; height: 48px;"></i>
+            <p>No tracking logs for today. Just talk to the board to log breakfasts, dinners, or runs!</p>
+          </div>
+        ` : activeMessages.map(m => `
+          <div class="chat-bubble-row ${m.isUser ? 'user' : 'assistant'}">
+            <div class="chat-bubble">
+              <div>${m.content}</div>
+              <div class="chat-bubble-time">${m.time}</div>
+            </div>
+          </div>
+        `).join('')}
+
+        ${state.isProcessingChat ? `
+          <div class="chat-loader">
+            <div class="chat-loader-dot"></div>
+            <div class="chat-loader-dot"></div>
+            <div class="chat-loader-dot"></div>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Today's logged items checklist -->
+      ${activeFoods.length > 0 || activeExercises.length > 0 ? `
+        <div style="padding: 0 16px; display: flex; flex-direction: column; gap: 12px; max-height: 250px; overflow-y: auto; border-top: 1px dashed var(--border); padding-top: 12px; margin-bottom: 8px;">
+          <h4 style="font-size: 0.9rem; font-weight: 700;">Logged Items Today</h4>
+          <div class="entries-list">
+            ${activeFoods.map(f => `
+              <div class="entry-card food">
+                <div class="entry-info">
+                  <div class="entry-icon"><i data-lucide="utensils"></i></div>
+                  <div class="entry-detail-box">
+                    <span class="entry-name">${f.name}</span>
+                    <span class="entry-subtext">P: ${f.proteinG}g · C: ${f.carbsG}g · F: ${f.fatG}g</span>
+                  </div>
+                </div>
+                <div class="entry-value-box">
+                  <span class="entry-calories">${f.calories} kcal</span>
+                  <button class="delete-btn btn-delete-food" data-id="${f.id}"><i data-lucide="trash-2"></i></button>
+                </div>
+              </div>
+            `).join('')}
+            
+            ${activeExercises.map(e => `
+              <div class="entry-card exercise">
+                <div class="entry-info">
+                  <div class="entry-icon"><i data-lucide="directions-run"></i></div>
+                  <div class="entry-detail-box">
+                    <span class="entry-name">${e.name}</span>
+                    <span class="entry-subtext">${e.duration} mins</span>
+                  </div>
+                </div>
+                <div class="entry-value-box">
+                  <span class="entry-calories">-${e.caloriesBurned} kcal</span>
+                  <button class="delete-btn btn-delete-exercise" data-id="${e.id}"><i data-lucide="trash-2"></i></button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- Bottom entry chat bar -->
+      <div class="chat-input-bar">
+        <input type="text" id="chat-input" placeholder="Type logs e.g. 'I had 3 boiled eggs and black coffee'..." />
+        <button class="chat-send-btn" id="btn-send-chat">
+          <i data-lucide="send"></i>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderMacroBar(label, current, goal, unit, color) {
+  const percent = goal > 0 ? Math.min(100, Math.round((current / goal) * 100)) : 0;
+  return `
+    <div class="macro-bar-container">
+      <div class="macro-bar-info">
+        <span class="macro-bar-label">${label}</span>
+        <span class="macro-bar-value">${Math.round(current)}${unit} / ${goal}${unit} (${percent}%)</span>
+      </div>
+      <div class="macro-bar-track">
+        <div class="macro-bar-fill" style="width: ${percent}%; background-color: ${color}"></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCalendarStrip(selectedDate) {
+  const today = new Date();
+  const dayMillis = 24 * 60 * 60 * 1000;
+  
+  // Find start of week (Sunday) containing selectedDate
+  const currentDayOfWeek = selectedDate.getDay();
+  const startOfWeek = new Date(selectedDate.getTime() - currentDayOfWeek * dayMillis);
+  
+  const weekDays = [];
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(startOfWeek.getTime() + i * dayMillis);
+    weekDays.push(d);
+  }
+
+  return `
+    <div class="calendar-strip">
+      ${weekDays.map(date => {
+        const dateStr = getLocalDateString(date);
+        const isSelected = dateStr === state.selectedDateStr;
+        const isToday = dateStr === getLocalDateString(today);
+        
+        return `
+          <div class="day-cell ${isSelected ? 'selected' : ''}" data-date="${dateStr}">
+            <span class="day-label">${dayNames[date.getDay()]}</span>
+            <div class="day-num-box">${date.getDate()}</div>
+            ${isToday ? '<div class="today-dot"></div>' : ''}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+// ── Weekly Summary Screen ────────────────────────────────────────────────────
+function renderWeeklyScreen() {
+  const tabs = ["This week", "Last week", "2 weeks ago", "3 weeks ago"];
+  const selectedTab = localStorage.getItem('weeklyTab') || '0';
+  const tabIndex = parseInt(selectedTab);
+
+  // Bounds
+  const today = new Date();
+  const currentDayOfWeek = today.getDay();
+  const startOfCurrentWeek = new Date(today.getTime() - currentDayOfWeek * 24 * 60 * 60 * 1000);
+  startOfCurrentWeek.setHours(0,0,0,0);
+  
+  const weekStart = new Date(startOfCurrentWeek.getTime() - tabIndex * 7 * 24 * 60 * 60 * 1000);
+  const weekDays = [];
+  for (let i = 0; i < 7; i++) {
+    weekDays.push(new Date(weekStart.getTime() + i * 24 * 60 * 60 * 1000));
+  }
+  
+  const formattedStart = weekDays[0].toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  const formattedEnd = weekDays[6].toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+
+  let weeklyFoodTotal = 0;
+  let weeklyExerciseTotal = 0;
+  let daysTrackedCount = 0;
+  
+  const dailyRows = weekDays.map(date => {
+    const dStr = getLocalDateString(date);
+    const summary = getDailyNutritionSummary(dStr);
+    
+    weeklyFoodTotal += summary.totalCalories;
+    weeklyExerciseTotal += summary.exerciseCalories;
+    
+    const hasData = state.foodEntries.some(f => f.dateStr === dStr) || state.exerciseEntries.some(e => e.dateStr === dStr);
+    if (hasData) daysTrackedCount++;
+
+    return {
+      day: date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }),
+      food: hasData ? summary.totalCalories : '-',
+      exercise: hasData && summary.exerciseCalories > 0 ? summary.exerciseCalories : '-',
+      remaining: hasData ? (state.dailyCalorieGoal - summary.totalCalories + summary.exerciseCalories) : '-',
+      carbs: hasData ? summary.totalCarbs : '-',
+      protein: hasData ? summary.totalProtein : '-',
+      fat: hasData ? summary.totalFat : '-'
+    };
+  });
+
+  const weeklyCalorieBudget = state.dailyCalorieGoal * 7;
+  const weeklyRemaining = weeklyCalorieBudget - weeklyFoodTotal + weeklyExerciseTotal;
+  const isUnderBudget = weeklyRemaining >= 0;
+
+  return `
+    <div style="display: flex; flex-direction: column; gap: 24px;">
+      <!-- Tab Selector -->
+      <div class="tab-row">
+        ${tabs.map((tab, idx) => `
+          <div class="tab-item ${idx === tabIndex ? 'active' : ''}" data-tab="${idx}">${tab}</div>
+        `).join('')}
+      </div>
+
+      <!-- Report summary overview card -->
+      <div class="summary-card">
+        <span class="summary-title">${formattedStart} — ${formattedEnd}</span>
+        <div class="summary-details">
+          <span style="font-weight: 700; color: ${isUnderBudget ? 'var(--success)' : 'var(--error)'}">
+            ${Math.abs(weeklyRemaining)} calories ${isUnderBudget ? 'under budget' : 'over budget'} this week
+          </span>
+          <span>${daysTrackedCount} out of 7 days tracked this week</span>
+        </div>
+      </div>
+
+      <!-- Calories Breakdown Table -->
+      <div class="table-card">
+        <h3>Calories Summary</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th class="text-end">Food (kcal)</th>
+              <th class="text-end">Exercise (kcal)</th>
+              <th class="text-end">Remaining (kcal)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dailyRows.map(row => `
+              <tr>
+                <td>${row.day}</td>
+                <td class="text-end">${row.food}</td>
+                <td class="text-end">${row.exercise}</td>
+                <td class="text-end" style="color: ${row.remaining !== '-' ? (row.remaining >= 0 ? 'var(--success)' : 'var(--error)') : 'inherit'}">${row.remaining}</td>
+              </tr>
+            `).join('')}
+            <tr class="total-row">
+              <td>Total</td>
+              <td class="text-end">${weeklyFoodTotal}</td>
+              <td class="text-end">${weeklyExerciseTotal}</td>
+              <td class="text-end" style="color: ${weeklyRemaining >= 0 ? 'var(--success)' : 'var(--error)'}">${weeklyRemaining}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style="font-size: 0.8rem; opacity: 0.6; margin-top: 12px;">* Based on a daily goal of ${state.dailyCalorieGoal} calories</div>
+      </div>
+
+      <!-- Macronutrients Table -->
+      <div class="table-card">
+        <h3>Macronutrients Summary</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th class="text-end">Carbs (g)</th>
+              <th class="text-end">Protein (g)</th>
+              <th class="text-end">Fat (g)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dailyRows.map(row => `
+              <tr>
+                <td>${row.day}</td>
+                <td class="text-end">${row.carbs !== '-' ? Math.round(row.carbs) + 'g' : '-'}</td>
+                <td class="text-end">${row.protein !== '-' ? Math.round(row.protein) + 'g' : '-'}</td>
+                <td class="text-end">${row.fat !== '-' ? Math.round(row.fat) + 'g' : '-'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// ── Weight Tracker Screen ────────────────────────────────────────────────────
+function renderWeightScreen() {
+  const period = localStorage.getItem('weightPeriod') || 'WEEK';
+  
+  // Filter weights by period
+  const cutoff = getCutoffDays(period);
+  const filtered = state.weightEntries
+    .filter(w => w.timestamp >= cutoff)
+    .sort((a,b) => a.timestamp - b.timestamp); // Ascending order for chart
+
+  return `
+    <div style="display: flex; flex-direction: column; gap: 24px;">
+      <!-- Stats cards row -->
+      <div class="stat-card-row">
+        <div class="stat-card">
+          <span class="stat-card-label">Current Weight</span>
+          <span class="stat-card-value">${state.currentWeightKg} kg</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-card-label">Target Weight</span>
+          <span class="stat-card-value">${state.targetWeightKg} kg</span>
+        </div>
+      </div>
+
+      <!-- Chart area -->
+      <div class="chart-card">
+        <div class="tab-row" style="border: none;">
+          <div class="tab-item weight-tab ${period === 'WEEK' ? 'active' : ''}" data-period="WEEK">Week</div>
+          <div class="tab-item weight-tab ${period === 'MONTH' ? 'active' : ''}" data-period="MONTH">Month</div>
+          <div class="tab-item weight-tab ${period === 'YEAR' ? 'active' : ''}" data-period="YEAR">Year</div>
+          <div class="tab-item weight-tab ${period === 'ALL' ? 'active' : ''}" data-period="ALL">All time</div>
+        </div>
+
+        <div class="chart-canvas-container">
+          <canvas id="weight-chart-canvas"></canvas>
+        </div>
+      </div>
+
+      <!-- Weight entries logs list -->
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="font-size: 1.15rem; font-weight: 700;">Logged Weight Entries</h3>
+          <button class="btn-style primary" id="btn-add-weight-dialog" style="height: 38px; padding: 0 16px; font-size: 0.9rem;">
+            <i data-lucide="plus"></i> Add Entry
+          </button>
+        </div>
+
+        <div class="entries-list">
+          ${state.weightEntries.map(w => {
+            const dateStr = new Date(w.timestamp).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+            return `
+              <div class="entry-card">
+                <div class="entry-info">
+                  <div class="entry-icon" style="background-color: var(--primary-container); color: var(--primary);"><i data-lucide="monitor-weight"></i></div>
+                  <div class="entry-detail-box">
+                    <span class="entry-name">${w.weightKg} kg</span>
+                    <span class="entry-subtext">${dateStr}</span>
+                  </div>
+                </div>
+                <button class="delete-btn btn-delete-weight" data-id="${w.id}"><i data-lucide="trash-2"></i></button>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function getCutoffDays(period) {
+  const d = new Date();
+  d.setHours(0,0,0,0);
+  switch (period) {
+    case 'WEEK': return d.getTime() - 7 * 24 * 60 * 60 * 1000;
+    case 'MONTH': return d.getTime() - 30 * 24 * 60 * 60 * 1000;
+    case 'YEAR': return d.getTime() - 365 * 24 * 60 * 60 * 1000;
+    case 'ALL': return 0;
+  }
+}
+
+function renderWeightChartCanvas() {
+  const canvas = document.getElementById('weight-chart-canvas');
+  if (!canvas) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const width = rect.width;
+  const height = rect.height;
+
+  const period = localStorage.getItem('weightPeriod') || 'WEEK';
+  const cutoff = getCutoffDays(period);
+  
+  // Ascending order for chart
+  const entries = state.weightEntries
+    .filter(w => w.timestamp >= cutoff)
+    .sort((a,b) => a.timestamp - b.timestamp);
+
+  ctx.clearRect(0,0, width, height);
+
+  if (entries.length === 0) {
+    ctx.font = '14px Inter';
+    ctx.fillStyle = '#888';
+    ctx.textAlign = 'center';
+    ctx.fillText('No weight entries in this period', width / 2, height / 2);
+    return;
+  }
+
+  // Calculate Y bounds
+  const weights = entries.map(e => e.weightKg).concat([state.targetWeightKg]);
+  const maxW = Math.max(...weights);
+  const minW = Math.min(...weights);
+  const padding = Math.max(5, (maxW - minW) * 0.2);
+
+  const yMax = maxW + padding;
+  const yMin = Math.max(0, minW - padding);
+  const yRange = yMax - yMin;
+
+  function toY(w) {
+    return height - 20 - ((w - yMin) / yRange) * (height - 40);
+  }
+
+  function toX(index) {
+    if (entries.length <= 1) return width / 2;
+    const paddingX = 40;
+    return paddingX + (index / (entries.length - 1)) * (width - paddingX - 20);
+  }
+
+  // Draw target weight dashed line
+  const targetY = toY(state.targetWeightKg);
+  ctx.save();
+  ctx.strokeStyle = '#2E7D32';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 6]);
+  ctx.beginPath();
+  ctx.moveTo(40, targetY);
+  ctx.lineTo(width - 20, targetY);
+  ctx.stroke();
+  ctx.restore();
+
+  // Draw grid lines
+  const gridRows = 4;
+  ctx.font = '10px Inter';
+  ctx.fillStyle = '#888';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= gridRows; i++) {
+    const val = yMin + (i / gridRows) * yRange;
+    const y = toY(val);
+    
+    // Grid horizontal line
+    ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+    ctx.beginPath();
+    ctx.moveTo(40, y);
+    ctx.lineTo(width - 20, y);
+    ctx.stroke();
+
+    // Text labels
+    ctx.fillText(`${Math.round(val)}kg`, 32, y + 3);
+  }
+
+  // Plot actual entries
+  const points = entries.map((e, idx) => ({ x: toX(idx), y: toY(e.weightKg) }));
+
+  // Draw connection line
+  if (points.length > 1) {
+    ctx.strokeStyle = 'rgba(45, 106, 79, 1)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.stroke();
+  }
+
+  // Draw dots
+  points.forEach(p => {
+    ctx.fillStyle = 'rgba(45, 106, 79, 1)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+    ctx.fill();
+
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.5, 0, 2 * Math.PI);
+    ctx.fill();
+  });
+}
+
+// ── Daily Goals Screen ───────────────────────────────────────────────────────
+function renderGoalsScreen() {
+  const carbsG = Math.round((state.dailyCalorieGoal * state.carbsPercent / 100) / 4);
+  const proteinG = Math.round((state.dailyCalorieGoal * state.proteinPercent / 100) / 4);
+  const fatG = Math.round((state.dailyCalorieGoal * state.fatPercent / 100) / 9);
+  
+  const sumPercent = state.carbsPercent + state.proteinPercent + state.fatPercent;
+  const isValid = sumPercent === 100;
+
+  return `
+    <div style="display: flex; flex-direction: column; gap: 24px;">
+      <!-- Calorie target inputs -->
+      <div class="card-content-box">
+        <h3 style="font-size: 1.15rem;">Calories Target</h3>
+        <div class="form-group">
+          <label>Calories (kcal)</label>
+          <input type="number" id="goals-calories" class="input-style" value="${state.dailyCalorieGoal}" />
+        </div>
+        <button class="btn-style secondary" id="btn-goals-calculator" style="gap: 8px;">
+          <i data-lucide="calculator"></i> Recalculate with Quiz Wizard
+        </button>
+      </div>
+
+      <!-- Macro Split configuration card -->
+      <div class="card-content-box">
+        <h3 style="font-size: 1.15rem;">Macro Percent Splits</h3>
+        <p style="font-size: 0.85rem; color: ${isValid ? 'var(--on-surface-variant)' : 'var(--error)'}">
+          Percentages must sum to exactly 100%. Currently: ${sumPercent}%
+        </p>
+
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+          <!-- Carbohydrates -->
+          <div class="goals-macro-row">
+            <div class="goals-macro-info">
+              <span class="goals-macro-name">Carbohydrates (${carbsG}g)</span>
+              <span class="goals-macro-cal">1g = 4 kcal</span>
+            </div>
+            <div class="goals-percent-input">
+              <input type="number" id="goals-carbs" value="${state.carbsPercent}" />
+              <span>%</span>
+            </div>
+          </div>
+
+          <!-- Protein -->
+          <div class="goals-macro-row">
+            <div class="goals-macro-info">
+              <span class="goals-macro-name">Protein (${proteinG}g)</span>
+              <span class="goals-macro-cal">1g = 4 kcal</span>
+            </div>
+            <div class="goals-percent-input">
+              <input type="number" id="goals-protein" value="${state.proteinPercent}" />
+              <span>%</span>
+            </div>
+          </div>
+
+          <!-- Fat -->
+          <div class="goals-macro-row">
+            <div class="goals-macro-info">
+              <span class="goals-macro-name">Fat (${fatG}g)</span>
+              <span class="goals-macro-cal">1g = 9 kcal</span>
+            </div>
+            <div class="goals-percent-input">
+              <input type="number" id="goals-fat" value="${state.fatPercent}" />
+              <span>%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Reminders Screen ─────────────────────────────────────────────────────────
+function renderRemindersScreen() {
+  function format12Hour(time24) {
+    const [h, m] = time24.split(':').map(Number);
+    const pm = h >= 12;
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    return `${h12}:${String(m).padStart(2,'0')} ${pm ? 'PM' : 'AM'}`;
+  }
+
+  return `
+    <div class="reminder-list-box">
+      <!-- Morning -->
+      <div class="reminder-card-row">
+        <div class="reminder-time-trigger" data-type="morning">
+          <span class="reminder-label">Morning</span>
+          <span class="reminder-time">${format12Hour(state.morningTime)}</span>
+        </div>
+        <div class="reminder-check ${state.morningEnabled ? 'checked' : ''}" data-type="morning">
+          ${state.morningEnabled ? '<i data-lucide="check"></i>' : ''}
+        </div>
+      </div>
+
+      <!-- Afternoon -->
+      <div class="reminder-card-row">
+        <div class="reminder-time-trigger" data-type="afternoon">
+          <span class="reminder-label">Afternoon</span>
+          <span class="reminder-time">${format12Hour(state.afternoonTime)}</span>
+        </div>
+        <div class="reminder-check ${state.afternoonEnabled ? 'checked' : ''}" data-type="afternoon">
+          ${state.afternoonEnabled ? '<i data-lucide="check"></i>' : ''}
+        </div>
+      </div>
+
+      <!-- Evening -->
+      <div class="reminder-card-row">
+        <div class="reminder-time-trigger" data-type="evening">
+          <span class="reminder-label">Evening</span>
+          <span class="reminder-time">${format12Hour(state.eveningTime)}</span>
+        </div>
+        <div class="reminder-check ${state.eveningEnabled ? 'checked' : ''}" data-type="evening">
+          ${state.eveningEnabled ? '<i data-lucide="check"></i>' : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Settings Screen ──────────────────────────────────────────────────────────
+function renderSettingsScreen() {
+  return `
+    <div style="display: flex; flex-direction: column; gap: 24px;">
+      <!-- API Key Card -->
+      <div class="card-content-box">
+        <h3 style="font-size: 1.15rem;">AI Settings</h3>
+        <p style="font-size: 0.85rem; color: var(--on-surface-variant)">
+          Provide a Gemini API Key to enable intelligent parsing of your text logs into food and exercise entries.
+        </p>
+        <div class="form-group" style="position: relative; margin-top: 12px;">
+          <label>Gemini API Key</label>
+          <input type="password" id="settings-api-key" class="input-style" value="${state.apiKey}" placeholder="Paster your API Key here..." />
+        </div>
+      </div>
+
+      <!-- About Card -->
+      <div class="card-content-box">
+        <h3 style="font-size: 1.15rem;">About Daywise</h3>
+        <div style="font-size: 0.95rem; font-weight: 600;">Version 1.0.0</div>
+        <p style="font-size: 0.85rem; color: var(--on-surface-variant)">
+          Daywise is a conversational companion for your health. Talk to the chatbot, and our integrated Gemini parser handles the calorie and macro breakdowns instantly!
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+// ── Database Aggregation ─────────────────────────────────────────────────────
+function getDailyNutritionSummary(dateStr) {
+  const foods = state.foodEntries.filter(f => f.dateStr === dateStr);
+  const exercises = state.exerciseEntries.filter(e => e.dateStr === dateStr);
+
+  const totalCalories = foods.reduce((sum, f) => sum + f.calories, 0);
+  const totalProtein = foods.reduce((sum, f) => sum + f.proteinG, 0);
+  const totalCarbs = foods.reduce((sum, f) => sum + f.carbsG, 0);
+  const totalFat = foods.reduce((sum, f) => sum + f.fatG, 0);
+  
+  const exerciseCalories = exercises.reduce((sum, e) => sum + e.caloriesBurned, 0);
+
+  return {
+    totalCalories,
+    totalProtein,
+    totalCarbs,
+    totalFat,
+    exerciseCalories
+  };
+}
+
+function parseLocalDate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+// ── Application Mounting & Interactivity ─────────────────────────────────────
+function mountApp() {
+  const appRoot = document.getElementById('app');
+  appRoot.innerHTML = appLayoutTemplate();
+  lucide.createIcons();
+  
+  // Attach general event listeners
+  attachEventListeners();
+  
+  // Re-draw canvas if Weight Screen is active
+  if (state.currentScreen === 'weight_tracker') {
+    renderWeightChartCanvas();
+  }
+}
+
+function attachEventListeners() {
+  // Sidebar navigations
+  document.querySelectorAll('.drawer-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.preventDefault();
+      const screen = item.dataset.target;
+      state.currentScreen = screen;
+      state.isSidebarOpen = false;
+      mountApp();
+    });
+  });
+
+  // Toggle drawer on mobile
+  const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
+  if (btnToggleSidebar) {
+    btnToggleSidebar.addEventListener('click', () => {
+      state.isSidebarOpen = !state.isSidebarOpen;
+      mountApp();
+    });
+  }
+
+  // Theme Toggle switcher
+  const btnThemeToggle = document.getElementById('btn-theme-toggle');
+  if (btnThemeToggle) {
+    btnThemeToggle.addEventListener('click', () => {
+      state.theme = state.theme === 'light' ? 'dark' : 'light';
+      localStorage.setItem('theme', state.theme);
+      document.documentElement.setAttribute('data-theme', state.theme);
+      mountApp();
+    });
+  }
+
+  // ── Onboarding Events ──────────────────────────────────────────────────────
+  const genderCards = document.querySelectorAll('.gender-select .selectable-card');
+  genderCards.forEach(c => {
+    c.addEventListener('click', () => {
+      state.onboardingData.gender = c.dataset.gender;
+      mountApp();
+    });
+  });
+
+  const goalCards = document.querySelectorAll('.goal-select .selectable-card');
+  goalCards.forEach(c => {
+    c.addEventListener('click', () => {
+      state.onboardingData.goal = c.dataset.goal;
+      mountApp();
+    });
+  });
+
+  const aggressionCards = document.querySelectorAll('.aggression-select .selectable-card');
+  aggressionCards.forEach(c => {
+    c.addEventListener('click', () => {
+      state.onboardingData.aggression = c.dataset.aggression;
+      mountApp();
+    });
+  });
+
+  const obAge = document.getElementById('ob-age');
+  if (obAge) obAge.addEventListener('input', (e) => state.onboardingData.age = e.target.value);
+  
+  const obHeight = document.getElementById('ob-height');
+  if (obHeight) obHeight.addEventListener('input', (e) => state.onboardingData.height = e.target.value);
+  
+  const obWeight = document.getElementById('ob-weight');
+  if (obWeight) obWeight.addEventListener('input', (e) => state.onboardingData.weight = e.target.value);
+  
+  const obTarget = document.getElementById('ob-target');
+  if (obTarget) obTarget.addEventListener('input', (e) => state.onboardingData.targetWeight = e.target.value);
+
+  const btnObNext = document.getElementById('btn-ob-next');
+  if (btnObNext) {
+    btnObNext.addEventListener('click', () => {
+      const step = state.onboardingStep;
+      if (step === 0) {
+        state.onboardingStep = 1;
+      } else if (step === 1) {
+        if (!state.onboardingData.age || !state.onboardingData.height || !state.onboardingData.weight) {
+          alert("Please fill in all basic info profile parameters!");
+          return;
+        }
+        state.onboardingStep = 2;
+      } else if (step === 2) {
+        state.onboardingStep = state.onboardingData.goal === 'Maintain' ? 4 : 3;
+      } else if (step === 3) {
+        state.onboardingStep = 4;
+      } else if (step === 4) {
+        if (!state.onboardingData.targetWeight) {
+          alert("Please set a realistic target weight!");
+          return;
+        }
+        state.onboardingStep = 5;
+      } else if (step === 5) {
+        // Compute and save target calorie split budgets
+        const weight = parseFloat(state.onboardingData.weight) || 80;
+        const height = parseFloat(state.onboardingData.height) || 170;
+        const age = parseInt(state.onboardingData.age) || 25;
+        const base = 10 * weight + 6.25 * height - 5 * age;
+        const bmr = state.onboardingData.gender === 'Male' ? Math.round(base + 5) : Math.round(base - 161);
+        const tdee = Math.round(bmr * 1.55);
+        
+        let calorieAdjustment = 0;
+        if (state.onboardingData.goal === 'Lose') {
+          calorieAdjustment = state.onboardingData.aggression === 'Relaxed' ? -275 : state.onboardingData.aggression === 'Moderate' ? -550 : -1100;
+        } else if (state.onboardingData.goal === 'Gain') {
+          calorieAdjustment = state.onboardingData.aggression === 'Relaxed' ? 275 : state.onboardingData.aggression === 'Moderate' ? 550 : 1100;
+        }
+        const targetCalories = Math.max(1200, tdee + calorieAdjustment);
+
+        state.dailyCalorieGoal = targetCalories;
+        state.currentWeightKg = weight;
+        state.targetWeightKg = parseFloat(state.onboardingData.targetWeight) || weight;
+        state.heightCm = height;
+        state.age = age;
+        state.isMale = state.onboardingData.gender === 'Male';
+        state.weightGoal = state.onboardingData.goal.toLowerCase();
+        state.aggression = state.onboardingData.aggression.toLowerCase();
+        state.hasCompletedOnboarding = true;
+
+        saveStateToStorage();
+      }
+      mountApp();
+    });
+  }
+
+  const btnObPrev = document.getElementById('btn-ob-prev');
+  if (btnObPrev) {
+    btnObPrev.addEventListener('click', () => {
+      const step = state.onboardingStep;
+      if (step === 4 && state.onboardingData.goal === 'Maintain') {
+        state.onboardingStep = 2;
+      } else {
+        state.onboardingStep = Math.max(0, step - 1);
+      }
+      mountApp();
+    });
+  }
+
+  // ── Chat Screen Events ─────────────────────────────────────────────────────
+  
+  // Date strip days picker
+  document.querySelectorAll('.day-cell').forEach(cell => {
+    cell.addEventListener('click', () => {
+      state.selectedDateStr = cell.dataset.date;
+      mountApp();
+      // Scroll to bottom of chat
+      const scroller = document.getElementById('chat-scroller');
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+  });
+
+  // Food and exercise log deletions
+  document.querySelectorAll('.btn-delete-food').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.dataset.id);
+      state.foodEntries = state.foodEntries.filter(f => f.id !== id);
+      saveStateToStorage();
+      mountApp();
+    });
+  });
+
+  document.querySelectorAll('.btn-delete-exercise').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.dataset.id);
+      state.exerciseEntries = state.exerciseEntries.filter(e => e.id !== id);
+      saveStateToStorage();
+      mountApp();
+    });
+  });
+
+  // Sending chat text logs
+  const btnSendChat = document.getElementById('btn-send-chat');
+  const chatInput = document.getElementById('chat-input');
+  
+  if (btnSendChat && chatInput) {
+    const handleSend = async () => {
+      const txt = chatInput.value.trim();
+      if (!txt) return;
+
+      chatInput.value = '';
+      
+      // Append user bubble
+      state.chatMessages.push({
+        id: Date.now(),
+        dateStr: state.selectedDateStr,
+        content: txt,
+        isUser: true,
+        time: new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      });
+      
+      state.isProcessingChat = true;
+      mountApp();
+
+      // Process with Gemini API
+      const parsed = await parseInputWithGemini(txt);
+      state.isProcessingChat = false;
+
+      let reply = "";
+      if (parsed.type === 'food') {
+        const loggedItems = [];
+        parsed.items.forEach(item => {
+          const foodEntry = {
+            id: Date.now() + Math.random(),
+            dateStr: state.selectedDateStr,
+            name: item.name,
+            calories: item.calories,
+            proteinG: item.protein_g || item.proteinG || 0,
+            carbsG: item.carbs_g || item.carbsG || 0,
+            fatG: item.fat_g || item.fatG || 0,
+            timestamp: Date.now()
+          };
+          state.foodEntries.push(foodEntry);
+          loggedItems.push(`${item.name} (${item.calories} cal)`);
+        });
+        reply = `✅ Logged: ${loggedItems.join(', ')}`;
+      } else if (parsed.type === 'exercise') {
+        const loggedItems = [];
+        parsed.items.forEach(item => {
+          const exerciseEntry = {
+            id: Date.now() + Math.random(),
+            dateStr: state.selectedDateStr,
+            name: item.name,
+            duration: item.duration_minutes || item.durationMinutes || 0,
+            caloriesBurned: item.calories_burned || item.caloriesBurned || 0,
+            timestamp: Date.now()
+          };
+          state.exerciseEntries.push(exerciseEntry);
+          loggedItems.push(`${item.name} (-${exerciseEntry.caloriesBurned} cal)`);
+        });
+        reply = `🏃 Logged: ${loggedItems.join(', ')}`;
+      } else if (parsed.type === 'unknown') {
+        reply = parsed.message;
+      } else if (parsed.type === 'error') {
+        reply = `⚠️ AI failed: ${parsed.message}`;
+      }
+
+      // Append assistant reply bubble
+      state.chatMessages.push({
+        id: Date.now(),
+        dateStr: state.selectedDateStr,
+        content: reply,
+        isUser: false,
+        time: new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      });
+
+      saveStateToStorage();
+      mountApp();
+      
+      // Scroll to bottom of chat
+      const scroller = document.getElementById('chat-scroller');
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    };
+
+    btnSendChat.addEventListener('click', handleSend);
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleSend();
+    });
+  }
+
+  // ── Weekly Screen Events ───────────────────────────────────────────────────
+  document.querySelectorAll('.tab-row .tab-item').forEach(tab => {
+    tab.addEventListener('click', () => {
+      localStorage.setItem('weeklyTab', tab.dataset.tab);
+      mountApp();
+    });
+  });
+
+  // ── Weight Screen Events ───────────────────────────────────────────────────
+  document.querySelectorAll('.weight-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      localStorage.setItem('weightPeriod', tab.dataset.period);
+      mountApp();
+    });
+  });
+
+  // Modal actions
+  const btnAddWeightDialog = document.getElementById('btn-add-weight-dialog');
+  if (btnAddWeightDialog) {
+    btnAddWeightDialog.addEventListener('click', () => {
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay';
+      modal.innerHTML = `
+        <div class="modal-box">
+          <span class="modal-title">Log Weight</span>
+          <div class="form-group">
+            <label>Weight (kg)</label>
+            <input type="number" step="0.1" id="input-weight-val" class="input-style" placeholder="e.g. 78.5" />
+          </div>
+          <div class="modal-actions">
+            <button class="btn-style secondary" id="btn-cancel-modal">Cancel</button>
+            <button class="btn-style primary" id="btn-confirm-weight">Add</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      
+      // Focus input
+      const input = document.getElementById('input-weight-val');
+      if (input) input.focus();
+
+      document.getElementById('btn-cancel-modal').addEventListener('click', () => modal.remove());
+      
+      document.getElementById('btn-confirm-weight').addEventListener('click', () => {
+        const val = parseFloat(input.value);
+        if (val > 0) {
+          state.currentWeightKg = val;
+          state.weightEntries.push({
+            id: Date.now(),
+            weightKg: val,
+            timestamp: Date.now()
+          });
+          saveStateToStorage();
+          modal.remove();
+          mountApp();
+        } else {
+          alert("Please enter a valid weight!");
+        }
+      });
+    });
+  }
+
+  document.querySelectorAll('.btn-delete-weight').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.dataset.id);
+      state.weightEntries = state.weightEntries.filter(w => w.id !== id);
+      saveStateToStorage();
+      mountApp();
+    });
+  });
+
+  // ── Daily Goals Screen Events ──────────────────────────────────────────────
+  const goalsCalories = document.getElementById('goals-calories');
+  if (goalsCalories) {
+    goalsCalories.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value);
+      if (val > 0) {
+        state.dailyCalorieGoal = val;
+        saveStateToStorage();
+        // Reactive calculation inside other cards on this screen
+        const carbsG = Math.round((state.dailyCalorieGoal * state.carbsPercent / 100) / 4);
+        const proteinG = Math.round((state.dailyCalorieGoal * state.proteinPercent / 100) / 4);
+        const fatG = Math.round((state.dailyCalorieGoal * state.fatPercent / 100) / 9);
+        
+        const labelCarbs = document.querySelector('.goals-macro-name');
+        if (labelCarbs) labelCarbs.textContent = `Carbohydrates (${carbsG}g)`;
+      }
+    });
+  }
+
+  const goalsCarbs = document.getElementById('goals-carbs');
+  const goalsProtein = document.getElementById('goals-protein');
+  const goalsFat = document.getElementById('goals-fat');
+  
+  const handlePercentUpdate = () => {
+    if (!goalsCarbs || !goalsProtein || !goalsFat) return;
+    const c = parseInt(goalsCarbs.value) || 0;
+    const p = parseInt(goalsProtein.value) || 0;
+    const f = parseInt(goalsFat.value) || 0;
+    
+    state.carbsPercent = c;
+    state.proteinPercent = p;
+    state.fatPercent = f;
+    saveStateToStorage();
+  };
+
+  if (goalsCarbs) goalsCarbs.addEventListener('input', handlePercentUpdate);
+  if (goalsProtein) goalsProtein.addEventListener('input', handlePercentUpdate);
+  if (goalsFat) goalsFat.addEventListener('input', handlePercentUpdate);
+
+  const btnGoalsCalculator = document.getElementById('btn-goals-calculator');
+  if (btnGoalsCalculator) {
+    btnGoalsCalculator.addEventListener('click', () => {
+      state.hasCompletedOnboarding = false;
+      state.onboardingStep = 0;
+      saveStateToStorage();
+      mountApp();
+    });
+  }
+
+  // ── Reminders Screen Events ────────────────────────────────────────────────
+  document.querySelectorAll('.reminder-check').forEach(chk => {
+    chk.addEventListener('click', () => {
+      const type = chk.dataset.type;
+      if (type === 'morning') state.morningEnabled = !state.morningEnabled;
+      else if (type === 'afternoon') state.afternoonEnabled = !state.afternoonEnabled;
+      else if (type === 'evening') state.eveningEnabled = !state.eveningEnabled;
+      saveStateToStorage();
+      mountApp();
+    });
+  });
+
+  document.querySelectorAll('.reminder-time-trigger').forEach(trigger => {
+    trigger.addEventListener('click', () => {
+      const type = trigger.dataset.type;
+      const currentVal = type === 'morning' ? state.morningTime : type === 'afternoon' ? state.afternoonTime : state.eveningTime;
+      
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay';
+      modal.innerHTML = `
+        <div class="modal-box">
+          <span class="modal-title">Edit Reminder Time</span>
+          <div class="form-group">
+            <label>Time</label>
+            <input type="time" id="input-time-val" class="input-style" value="${currentVal}" />
+          </div>
+          <div class="modal-actions">
+            <button class="btn-style secondary" id="btn-cancel-modal">Cancel</button>
+            <button class="btn-style primary" id="btn-confirm-time">Save</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      document.getElementById('btn-cancel-modal').addEventListener('click', () => modal.remove());
+      document.getElementById('btn-confirm-time').addEventListener('click', () => {
+        const val = document.getElementById('input-time-val').value;
+        if (val) {
+          if (type === 'morning') state.morningTime = val;
+          else if (type === 'afternoon') state.afternoonTime = val;
+          else if (type === 'evening') state.eveningTime = val;
+          saveStateToStorage();
+          modal.remove();
+          mountApp();
+        }
+      });
+    });
+  });
+
+  // ── Settings Screen Events ─────────────────────────────────────────────────
+  const settingsApiKey = document.getElementById('settings-api-key');
+  if (settingsApiKey) {
+    settingsApiKey.addEventListener('input', (e) => {
+      state.apiKey = e.target.value.trim();
+      saveStateToStorage();
+    });
+  }
+}
+
+// Mount app on initial load
+mountApp();
