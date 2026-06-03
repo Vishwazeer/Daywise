@@ -79,6 +79,7 @@ const state = {
   isSidebarOpen: false,
   isGeneratingDiet: false,
   isGeneratingRecipe: false,
+  selectedMacroView: 'calories',
   
   // Expanded days in weekly diet planner
   expandedPlanDays: JSON.parse(localStorage.getItem('expandedPlanDays') || '{}')
@@ -206,7 +207,7 @@ const SYSTEM_PROMPT = `
 You are a conversational health parser. Extract structured food or exercise details and return ONLY a valid raw JSON object. Do not include markdown code fences, extra text, or formatting.
 
 If the input describes food, return:
-{"type": "food", "items": [{"name": "Food Item Name", "calories": 250, "protein_g": 20.0, "carbs_g": 30.0, "fat_g": 5.0, "serving_size": "1 bowl (assumed)"}]}
+{"type": "food", "items": [{"name": "Food Item Name", "calories": 250, "protein_g": 20.0, "carbs_g": 30.0, "fat_g": 5.0, "serving_size": "1 bowl (assumed, ~200gms)"}]}
 
 If the input describes exercise, return:
 {"type": "exercise", "items": [{"name": "Workout Description", "duration_minutes": 30, "calories_burned": 240}]}
@@ -216,7 +217,7 @@ If the input is a greeting, conversational phrase, single word (like "hello", "w
 
 Rules:
 - Estimate realistic numbers based on general science if exact weights are omitted.
-- If the user does not specify a food quantity, you MUST estimate and provide a realistic assumed quantity in the 'serving_size' field, marked with '(assumed)' (e.g. '1 bowl (assumed)', '150g (assumed)'). If they specify it, just provide it (e.g. '3 eggs', '200g').
+- If the user does not specify a food quantity, you MUST estimate and provide a realistic assumed quantity and its estimated weight in grams in the 'serving_size' field, marked with '(assumed, ~Xgms)' (e.g. '1 bowl (assumed, ~180gms)', '1 apple (assumed, ~150gms)'). If they specify it, provide it and estimate the weight (e.g. '3 eggs (~150gms)', '1 glass milk (~240gms)', '200gms chicken').
 - Support multiple items in one go (e.g. "2 eggs and toast" -> items array with two objects).
 - Return ONLY the exact JSON, with absolutely no packaging or explainers.
 - Do NOT output empty items arrays. If no food or exercise is found, you MUST return the 'unknown' JSON type instead.
@@ -309,6 +310,7 @@ async function parseInputWithGemini(userText) {
         const data = await response.json();
         const rawJsonStr = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
         const parsed = cleanAndParseJSON(rawJsonStr);
+        parsed.modelUsed = model;
         console.info(`Model ${model} chatbot parsing succeeded!`);
         return parsed;
       } else {
@@ -328,63 +330,88 @@ async function parseInputWithGemini(userText) {
 
 function simulateMockParsing(text) {
   const lower = text.toLowerCase();
-  // Extract number if present, default to 1
+  // Extract number if present
   const countMatch = text.match(/\d+/);
-  const count = countMatch ? parseInt(countMatch[0]) : 1;
+  const hasCount = !!countMatch;
+  const count = hasCount ? parseInt(countMatch[0]) : 1;
 
   if (lower.includes('egg') || lower.includes('chicken') || lower.includes('rice') || lower.includes('banana') || lower.includes('shake') || lower.includes('toast') || lower.includes('apple') || lower.includes('salad') || lower.includes('coffee') || lower.includes('pizza') || lower.includes('burger') || lower.includes('milk') || lower.includes('cookie') || lower.includes('sandwich')) {
     const items = [];
     if (lower.includes('egg')) {
-      items.push({ name: `Boiled/Scrambled Eggs`, calories: count * 70, protein_g: count * 6, carbs_g: count * 0.5, fat_g: count * 5, serving_size: `${count} egg${count > 1 ? 's' : ''}` });
+      const q = hasCount ? count : 2;
+      const label = hasCount ? `${q} egg${q > 1 ? 's' : ''} (~${q * 50}gms)` : `2 eggs (assumed, ~100gms)`;
+      items.push({ name: `Boiled/Scrambled Eggs`, calories: q * 70, protein_g: q * 6, carbs_g: q * 0.5, fat_g: q * 5, serving_size: label });
     }
     if (lower.includes('chicken')) {
-      const grams = (count > 20) ? count : count * 150;
-      const isAssumed = count <= 20;
-      items.push({ name: `Grilled Chicken Breast`, calories: Math.round(grams * 1.45), protein_g: Math.round(grams * 0.27), carbs_g: 0, fat_g: Math.round(grams * 0.03), serving_size: `${grams}g${isAssumed ? ' (assumed)' : ''}` });
+      const grams = hasCount ? ((count > 20) ? count : count * 150) : 150;
+      const label = hasCount ? `${grams}gms` : `1 portion (assumed, ~150gms)`;
+      items.push({ name: `Grilled Chicken Breast`, calories: Math.round(grams * 1.45), protein_g: Math.round(grams * 0.27), carbs_g: 0, fat_g: Math.round(grams * 0.03), serving_size: label });
     }
     if (lower.includes('rice')) {
-      const cups = (count <= 10) ? count : Math.round(count / 150);
-      const isAssumed = count > 10 || text.match(/rice/i) && !countMatch;
-      items.push({ name: `White Cooked Rice`, calories: cups * 200, protein_g: cups * 4, carbs_g: cups * 44, fat_g: cups * 0.5, serving_size: `${cups} cup${cups > 1 ? 's' : ''}${isAssumed ? ' (assumed)' : ''}` });
+      const cups = hasCount ? ((count <= 10) ? count : Math.round(count / 150)) : 1;
+      const label = hasCount ? `${cups} cup${cups > 1 ? 's' : ''} (~${cups * 150}gms)` : `1 plate (assumed, ~150gms)`;
+      items.push({ name: `White Cooked Rice`, calories: cups * 200, protein_g: cups * 4, carbs_g: cups * 44, fat_g: cups * 0.5, serving_size: label });
     }
     if (lower.includes('banana')) {
-      items.push({ name: `Banana`, calories: count * 105, protein_g: count * 1.3, carbs_g: count * 27, fat_g: count * 0.3, serving_size: `${count} banana${count > 1 ? 's' : ''}` });
+      const q = count;
+      const label = hasCount ? `${q} banana${q > 1 ? 's' : ''} (~${q * 120}gms)` : `1 banana (assumed, ~120gms)`;
+      items.push({ name: `Banana`, calories: q * 105, protein_g: q * 1.3, carbs_g: q * 27, fat_g: q * 0.3, serving_size: label });
     }
     if (lower.includes('toast')) {
-      items.push({ name: `Whole Wheat Toast`, calories: count * 80, protein_g: count * 3, carbs_g: count * 15, fat_g: count * 1, serving_size: `${count} slice${count > 1 ? 's' : ''}` });
+      const q = hasCount ? count : 2;
+      const label = hasCount ? `${q} slice${q > 1 ? 's' : ''} (~${q * 30}gms)` : `2 slices (assumed, ~60gms)`;
+      items.push({ name: `Whole Wheat Toast`, calories: q * 80, protein_g: q * 3, carbs_g: q * 15, fat_g: q * 1, serving_size: label });
     }
     if (lower.includes('shake')) {
-      items.push({ name: `Whey Protein Shake`, calories: count * 160, protein_g: count * 25, carbs_g: count * 3, fat_g: count * 2, serving_size: `${count} shake${count > 1 ? 's' : ''}` });
+      const q = count;
+      const label = hasCount ? `${q} shake${q > 1 ? 's' : ''} (~${q * 300}gms)` : `1 glass (assumed, ~300gms)`;
+      items.push({ name: `Whey Protein Shake`, calories: q * 160, protein_g: q * 25, carbs_g: q * 3, fat_g: q * 2, serving_size: label });
     }
     if (lower.includes('apple')) {
-      items.push({ name: `Apple`, calories: count * 95, protein_g: count * 0.5, carbs_g: count * 25, fat_g: count * 0.3, serving_size: `${count} apple${count > 1 ? 's' : ''}` });
+      const q = count;
+      const label = hasCount ? `${q} apple${q > 1 ? 's' : ''} (~${q * 150}gms)` : `1 apple (assumed, ~150gms)`;
+      items.push({ name: `Apple`, calories: q * 95, protein_g: q * 0.5, carbs_g: q * 25, fat_g: q * 0.3, serving_size: label });
     }
     if (lower.includes('coffee')) {
-      items.push({ name: `Black Coffee`, calories: count * 5, protein_g: count * 0.2, carbs_g: 0, fat_g: 0, serving_size: `${count} cup${count > 1 ? 's' : ''}` });
+      const q = count;
+      const label = hasCount ? `${q} cup${q > 1 ? 's' : ''} (~${q * 240}gms)` : `1 cup (assumed, ~240gms)`;
+      items.push({ name: `Black Coffee`, calories: q * 5, protein_g: q * 0.2, carbs_g: 0, fat_g: 0, serving_size: label });
     }
     if (lower.includes('salad')) {
-      items.push({ name: `Garden Salad`, calories: count * 120, protein_g: count * 2, carbs_g: count * 10, fat_g: count * 8, serving_size: `${count} serving${count > 1 ? 's' : ''} (assumed)` });
+      const q = count;
+      const label = hasCount ? `${q} serving${q > 1 ? 's' : ''} (assumed, ~150gms)` : `1 bowl (assumed, ~150gms)`;
+      items.push({ name: `Garden Salad`, calories: q * 120, protein_g: q * 2, carbs_g: q * 10, fat_g: q * 8, serving_size: label });
     }
     if (lower.includes('pizza')) {
-      items.push({ name: `Pizza`, calories: count * 285, protein_g: count * 12, carbs_g: count * 36, fat_g: count * 10, serving_size: `${count} slice${count > 1 ? 's' : ''}` });
+      const q = hasCount ? count : 2;
+      const label = hasCount ? `${q} slice${q > 1 ? 's' : ''} (~${q * 100}gms)` : `2 slices (assumed, ~200gms)`;
+      items.push({ name: `Pizza`, calories: q * 285, protein_g: q * 12, carbs_g: q * 36, fat_g: q * 10, serving_size: label });
     }
     if (lower.includes('burger')) {
-      items.push({ name: `Beef Burger`, calories: count * 350, protein_g: count * 18, carbs_g: count * 40, fat_g: count * 14, serving_size: `${count} burger${count > 1 ? 's' : ''}` });
+      const q = count;
+      const label = hasCount ? `${q} burger${q > 1 ? 's' : ''} (~${q * 220}gms)` : `1 burger (assumed, ~220gms)`;
+      items.push({ name: `Beef Burger`, calories: q * 350, protein_g: q * 18, carbs_g: q * 40, fat_g: q * 14, serving_size: label });
     }
     if (lower.includes('milk')) {
-      items.push({ name: `Whole Milk`, calories: count * 150, protein_g: count * 8, carbs_g: count * 12, fat_g: count * 8, serving_size: `${count} glass${count > 1 ? 'es' : ''} (assumed)` });
+      const q = count;
+      const label = hasCount ? `${q} glass${q > 1 ? 'es' : ''} (assumed, ~240gms)` : `1 glass (assumed, ~240gms)`;
+      items.push({ name: `Whole Milk`, calories: q * 150, protein_g: q * 8, carbs_g: q * 12, fat_g: q * 8, serving_size: label });
     }
     if (lower.includes('cookie')) {
-      items.push({ name: `Chocolate Chip Cookie`, calories: count * 140, protein_g: count * 2, carbs_g: count * 20, fat_g: count * 7, serving_size: `${count} cookie${count > 1 ? 's' : ''}` });
+      const q = hasCount ? count : 2;
+      const label = hasCount ? `${q} cookie${q > 1 ? 's' : ''} (~${q * 30}gms)` : `2 cookies (assumed, ~60gms)`;
+      items.push({ name: `Chocolate Chip Cookie`, calories: q * 140, protein_g: q * 2, carbs_g: q * 20, fat_g: q * 7, serving_size: label });
     }
     if (lower.includes('sandwich')) {
-      items.push({ name: `Turkey Sandwich`, calories: count * 320, protein_g: count * 18, carbs_g: count * 38, fat_g: count * 9, serving_size: `${count} sandwich${count > 1 ? 's' : ''}` });
+      const q = count;
+      const label = hasCount ? `${q} sandwich${q > 1 ? 's' : ''} (~${q * 200}gms)` : `1 sandwich (assumed, ~200gms)`;
+      items.push({ name: `Turkey Sandwich`, calories: q * 320, protein_g: q * 18, carbs_g: q * 38, fat_g: q * 9, serving_size: label });
     }
     
     if (items.length === 0) {
-      items.push({ name: text.trim(), calories: 250 * count, protein_g: 10 * count, carbs_g: 30 * count, fat_g: 8 * count, serving_size: `1 plate (assumed)` });
+      items.push({ name: text.trim(), calories: 250 * count, protein_g: 10 * count, carbs_g: 30 * count, fat_g: 8 * count, serving_size: `1 serving (assumed, ~150gms)` });
     }
-    return { type: "food", items };
+    return { type: "food", items, modelUsed: "mock-parser" };
   }
   
   if (lower.includes('run') || lower.includes('walk') || lower.includes('jog') || lower.includes('swim') || lower.includes('workout') || lower.includes('cycle') || lower.includes('gym') || lower.includes('cardio') || lower.includes('pushup') || lower.includes('plank')) {
@@ -413,31 +440,134 @@ function simulateMockParsing(text) {
     if (items.length === 0) {
       items.push({ name: text.trim(), duration_minutes: minutes, calories_burned: minutes * 7 });
     }
-    return { type: "exercise", items };
+    return { type: "exercise", items, modelUsed: "mock-parser" };
   }
 
   // Simple check for greetings, conversational filler, or single garbage words
   const garbageWords = ['hello', 'hi', 'hey', 'yo', 'wow', 'greetings', 'test', 'okay', 'ok', 'yes', 'no', 'thanks', 'thank you', 'cool', 'nice', 'awesome', 'great'];
   if (garbageWords.includes(lower.trim())) {
-    return { type: "unknown", message: "I couldn't identify any specific food or exercise in your message. Try saying something like 'I had 3 scrambled eggs for breakfast' or 'walked for 45 minutes'!" };
+    return { type: "unknown", message: "I couldn't identify any specific food or exercise in your message. Try saying something like 'I had 3 scrambled eggs for breakfast' or 'walked for 45 minutes'!", modelUsed: "mock-parser" };
   }
 
   // Fallback instead of failing: if they didn't match any keywords but wrote a phrase, let's treat it as a custom food log dynamically scaled!
   if (text.trim().length > 3) {
     return {
       type: "food",
+      modelUsed: "mock-parser",
       items: [{
         name: text.trim(),
         calories: 150 * count,
         protein_g: 8 * count,
         carbs_g: 20 * count,
         fat_g: 5 * count,
-        serving_size: `1 serving (assumed)`
+        serving_size: `1 serving (assumed, ~150g)`
       }]
     };
   }
 
-  return { type: "unknown", message: "I couldn't identify any specific food or exercise in your message. Try saying something like 'I had 3 boiled eggs' or 'ran for 30 minutes'!" };
+  return { type: "unknown", message: "I couldn't identify any specific food or exercise in your message. Try saying something like 'I had 3 boiled eggs' or 'ran for 30 minutes'!", modelUsed: "mock-parser" };
+}
+
+// ── Magnified Modal Content Renderer ─────────────────────────────────────────
+function renderMagnifiedModalContent() {
+  const msgId = state.editingMessageId;
+  const isFood = state.editingMessageType === 'food';
+  
+  let rowsHtml = '';
+  if (isFood) {
+    const foods = state.foodEntries.filter(f => f.messageId === msgId);
+    rowsHtml = foods.map((f, idx) => `
+      <div class="modal-edit-row" data-id="${f.id}" data-type="food" style="margin-bottom: 16px; border-bottom: 1px dashed var(--border-visible); padding-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-weight: 700; font-size: 0.9rem; color: var(--primary); display: flex; justify-content: space-between; align-items: center;">
+          <span>Item #${idx + 1}</span>
+          <button class="btn-delete-row" data-id="${f.id}" data-type="food" title="Delete this item" style="background: none; border: none; color: var(--error); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 4px;">
+            <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+          </button>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr; gap: 8px;">
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Food Name</label>
+            <input type="text" class="edit-food-name" value="${f.name}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Serving Size / Weight</label>
+            <input type="text" class="edit-food-serving" value="${f.servingSize || ''}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Calories (kcal)</label>
+            <input type="number" class="edit-food-calories" value="${f.calories}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Protein (g)</label>
+            <input type="number" class="edit-food-protein" value="${f.proteinG}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Carbs (g)</label>
+            <input type="number" class="edit-food-carbs" value="${f.carbsG}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Fat (g)</label>
+            <input type="number" class="edit-food-fat" value="${f.fatG}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+        </div>
+      </div>
+    `).join('');
+  } else {
+    const exercises = state.exerciseEntries.filter(e => e.messageId === msgId);
+    rowsHtml = exercises.map((e, idx) => `
+      <div class="modal-edit-row" data-id="${e.id}" data-type="exercise" style="margin-bottom: 16px; border-bottom: 1px dashed var(--border-visible); padding-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-weight: 700; font-size: 0.9rem; color: var(--color-exercise); display: flex; justify-content: space-between; align-items: center;">
+          <span>Workout #${idx + 1}</span>
+          <button class="btn-delete-row" data-id="${e.id}" data-type="exercise" title="Delete this workout" style="background: none; border: none; color: var(--error); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 4px;">
+            <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+          </button>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr; gap: 8px;">
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Workout Name</label>
+            <input type="text" class="edit-exercise-name" value="${e.name}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Duration (mins)</label>
+            <input type="number" class="edit-exercise-duration" value="${e.duration}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+          <div>
+            <label style="font-size: 0.75rem; font-weight: 600; opacity: 0.8; margin-bottom: 4px; display: block;">Calories Burned (kcal)</label>
+            <input type="number" class="edit-exercise-calories" value="${e.caloriesBurned}" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1.5px solid var(--border-visible); background: var(--surface); color: var(--on-surface); font-size: 0.9rem;" />
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  return `
+    <div class="magnified-modal-content">
+      <h3 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; font-family: var(--font-display);">
+        <i data-lucide="${isFood ? 'utensils' : 'dumbbell'}" style="color: var(--primary);"></i>
+        Edit Logged Data
+      </h3>
+      <p style="font-size: 0.75rem; opacity: 0.6; margin-bottom: 12px;">Modify names, estimated servings, or nutrient values below.</p>
+      
+      <div style="flex: 1; overflow-y: auto; max-height: 380px; padding-right: 6px;">
+        ${rowsHtml}
+      </div>
+      
+      <div class="modal-actions" style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;">
+        <button class="btn" id="btn-cancel-modal" style="padding: 10px 18px; border-radius: 12px; background: var(--surface-variant); border: 1px solid var(--border-visible); color: var(--on-surface); font-weight: 600; font-size: 0.9rem; cursor: pointer; transition: all 0.2s ease;">
+          Cancel
+        </button>
+        <button class="btn btn-primary" id="btn-save-modal" style="padding: 10px 20px; border-radius: 12px; background: var(--primary); color: var(--on-primary); font-weight: 600; font-size: 0.9rem; cursor: pointer; border: none; transition: all 0.2s ease; display: flex; align-items: center; gap: 6px;">
+          <i data-lucide="check" style="width: 16px; height: 16px;"></i> Save Changes
+        </button>
+      </div>
+    </div>
+  `;
 }
 
 // ── Application Core Render Flow ─────────────────────────────────────────────
@@ -445,6 +575,9 @@ function appLayoutTemplate() {
   return `
     <!-- Onboarding overlay -->
     ${!state.hasCompletedOnboarding ? onboardingOverlayTemplate() : ''}
+
+    <!-- Collapsible sidebar backdrop -->
+    <div id="sidebar-backdrop" class="sidebar-backdrop ${state.isSidebarOpen ? 'active' : ''}"></div>
 
     <!-- Collapsible sidebar -->
     <aside id="sidebar" class="${state.isSidebarOpen ? 'drawer-open' : ''}">
@@ -504,6 +637,11 @@ function appLayoutTemplate() {
         ${renderScreenContent()}
       </div>
     </main>
+
+    <!-- Magnified Nutrient Table Modal Overlay -->
+    <div id="magnified-modal" class="magnified-modal-overlay ${state.editingMessageId ? 'active' : ''}">
+      ${state.editingMessageId ? renderMagnifiedModalContent() : ''}
+    </div>
   `;
 }
 
@@ -717,19 +855,37 @@ function renderChatScreen() {
   const proteinGoalG = Math.round((state.dailyCalorieGoal * state.proteinPercent / 100) / 4);
   const fatGoalG = Math.round((state.dailyCalorieGoal * state.fatPercent / 100) / 9);
 
-  const overviewData = {
-    caloriesConsumed: summary.totalCalories,
-    calorieGoal: state.dailyCalorieGoal,
-    proteinCurrent: summary.totalProtein,
-    proteinGoal: proteinGoalG,
-    carbsCurrent: summary.totalCarbs,
-    carbsGoal: carbsGoalG,
-    fatCurrent: summary.totalFat,
-    fatGoal: fatGoalG,
-    exerciseCalories: summary.exerciseCalories
-  };
+  let ringProgress = 0;
+  let ringColor = 'var(--color-calories)';
+  let trackColor = 'rgba(235, 94, 40, 0.08)'; // based on calories
+  let numText = summary.totalCalories;
+  let goalText = `/ ${state.dailyCalorieGoal} kcal`;
+  let leftText = `${Math.max(0, state.dailyCalorieGoal - summary.totalCalories + summary.exerciseCalories)} left`;
 
-  const ringProgress = state.dailyCalorieGoal > 0 ? (summary.totalCalories / state.dailyCalorieGoal).toFixed(3) : 0;
+  if (state.selectedMacroView === 'protein') {
+    ringProgress = proteinGoalG > 0 ? (summary.totalProtein / proteinGoalG) : 0;
+    ringColor = 'var(--color-protein)';
+    trackColor = 'rgba(74, 144, 217, 0.08)';
+    numText = `${Math.round(summary.totalProtein)}g`;
+    goalText = `/ ${proteinGoalG}g`;
+    leftText = `${Math.max(0, proteinGoalG - Math.round(summary.totalProtein))}g left`;
+  } else if (state.selectedMacroView === 'carbs') {
+    ringProgress = carbsGoalG > 0 ? (summary.totalCarbs / carbsGoalG) : 0;
+    ringColor = 'var(--color-carbs)';
+    trackColor = 'rgba(255, 179, 71, 0.08)';
+    numText = `${Math.round(summary.totalCarbs)}g`;
+    goalText = `/ ${carbsGoalG}g`;
+    leftText = `${Math.max(0, carbsGoalG - Math.round(summary.totalCarbs))}g left`;
+  } else if (state.selectedMacroView === 'fat') {
+    ringProgress = fatGoalG > 0 ? (summary.totalFat / fatGoalG) : 0;
+    ringColor = 'var(--color-fat)';
+    trackColor = 'rgba(155, 89, 182, 0.08)';
+    numText = `${Math.round(summary.totalFat)}g`;
+    goalText = `/ ${fatGoalG}g`;
+    leftText = `${Math.max(0, fatGoalG - Math.round(summary.totalFat))}g left`;
+  }
+
+  ringProgress = parseFloat(ringProgress);
   const radius = 50;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (Math.min(1, ringProgress) * circumference);
@@ -738,6 +894,9 @@ function renderChatScreen() {
   const activeFoods = state.foodEntries.filter(f => f.dateStr === state.selectedDateStr);
   const activeExercises = state.exerciseEntries.filter(e => e.dateStr === state.selectedDateStr);
 
+  const isCalorieActive = state.selectedMacroView === 'calories';
+  const ringActiveStyle = isCalorieActive ? 'border: 1.5px solid var(--color-calories); background-color: var(--surface-variant);' : '';
+
   return `
     <div class="chat-container">
       <!-- Calendar strip selector -->
@@ -745,15 +904,15 @@ function renderChatScreen() {
 
       <!-- Dashboard stats summary -->
       <div class="overview-grid">
-        <div class="calorie-ring-box">
+        <div class="calorie-ring-box macro-clickable" data-macro="calories" style="cursor: pointer; padding: 6px; border-radius: 50%; transition: all 0.2s ease; ${ringActiveStyle}">
           <svg viewBox="0 0 120 120">
-            <circle class="track" cx="60" cy="60" r="50"></circle>
-            <circle class="fill" cx="60" cy="60" r="50" stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
+            <circle class="track" cx="60" cy="60" r="50" style="stroke: ${trackColor}"></circle>
+            <circle class="fill" cx="60" cy="60" r="50" stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" style="stroke: ${ringColor}"></circle>
           </svg>
           <div class="calorie-ring-center">
-            <span class="ring-num">${summary.totalCalories}</span>
-            <span class="ring-goal">/ ${state.dailyCalorieGoal} kcal</span>
-            <span class="ring-left">${Math.max(0, state.dailyCalorieGoal - summary.totalCalories + summary.exerciseCalories)} left</span>
+            <span class="ring-num">${numText}</span>
+            <span class="ring-goal" style="font-size: 0.6rem; opacity: 0.8;">${goalText}</span>
+            <span class="ring-left" style="font-size: 0.6rem; font-weight: 700; color: ${ringColor};">${leftText}</span>
           </div>
         </div>
 
@@ -778,88 +937,236 @@ function renderChatScreen() {
             <i data-lucide="message-square" style="width: 48px; height: 48px;"></i>
             <p>No tracking logs for today. Just talk to the board to log breakfasts, dinners, or runs!</p>
           </div>
-        ` : activeMessages.map(m => `
-          <div class="chat-bubble-row ${m.isUser ? 'user' : 'assistant'}">
-            <div class="chat-bubble ${m.hasTable ? 'has-table' : ''}">
-              <div>${m.content}</div>
-              <div class="chat-bubble-time">${m.time}</div>
-            </div>
-          </div>
-        `).join('')}
-
-        ${state.isProcessingChat ? `
-          <div class="chat-loader">
-            <div class="chat-loader-dot"></div>
-            <div class="chat-loader-dot"></div>
-            <div class="chat-loader-dot"></div>
-          </div>
-        ` : ''}
-
-        <!-- Today's logged items checklist directly inside scroller so it never gets cut off -->
-        ${activeFoods.length > 0 || activeExercises.length > 0 ? `
-          <div class="today-logs-box" style="margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 16px;">
-            <h4 style="font-size: 0.9rem; font-weight: 700; margin-bottom: 12px; color: var(--on-surface-variant);">Logged Items Today</h4>
-            <div class="entries-list">
-              ${activeFoods.map(f => `
-                <div class="entry-card food">
-                  <div class="entry-info">
-                    <div class="entry-icon"><i data-lucide="utensils"></i></div>
-                    <div class="entry-detail-box">
-                      <span class="entry-name">${f.name}</span>
-                      <span class="entry-subtext">${f.servingSize ? `<b>${f.servingSize}</b> · ` : ''}P: ${f.proteinG}g · C: ${f.carbsG}g · F: ${f.fatG}g</span>
-                    </div>
-                  </div>
-                  <div class="entry-value-box">
-                    <span class="entry-calories">${f.calories} kcal</span>
-                    <button class="delete-btn btn-delete-food" data-id="${f.id}"><i data-lucide="trash-2"></i></button>
+        ` : activeMessages.map(m => {
+            if (m.isUser) {
+              return `
+                <div class="chat-bubble-row user">
+                  <div class="chat-bubble">
+                    <div>${m.content}</div>
+                    <div class="chat-bubble-time">${m.time}</div>
                   </div>
                 </div>
-              `).join('')}
+              `;
+            }
+            
+            // Assistant bubble with food log table
+            if (m.messageType === 'food') {
+              const msgFoods = state.foodEntries.filter(f => f.messageId === m.id);
+              if (msgFoods.length === 0) return ''; // Deleted -> disappear!
               
-              ${activeExercises.map(e => `
-                <div class="entry-card exercise">
-                  <div class="entry-info">
-                    <div class="entry-icon"><i data-lucide="dumbbell"></i></div>
-                    <div class="entry-detail-box">
-                      <span class="entry-name">${e.name}</span>
-                      <span class="entry-subtext">${e.duration} mins</span>
+              let totalCalories = 0;
+              let totalProtein = 0;
+              let totalCarbs = 0;
+              let totalFat = 0;
+              
+              const tableRows = msgFoods.map(f => {
+                totalCalories += f.calories;
+                totalProtein += f.proteinG;
+                totalCarbs += f.carbsG;
+                totalFat += f.fatG;
+                return `
+                  <tr>
+                    <td style="font-weight: 500;">${f.name}</td>
+                    <td style="text-align: right; font-style: italic; opacity: 0.85;">${f.servingSize || '—'}</td>
+                    <td style="text-align: right;">${f.calories}</td>
+                    <td style="text-align: right;">${f.proteinG}g</td>
+                    <td style="text-align: right;">${f.carbsG}g</td>
+                    <td style="text-align: right;">${f.fatG}g</td>
+                  </tr>
+                `;
+              }).join('');
+              
+              const loggedNames = msgFoods.map(f => f.name).join(', ');
+              
+              return `
+                <div class="chat-bubble-row assistant">
+                  <div class="chat-bubble has-table" style="position: relative; padding-right: 12px;">
+                    <div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+                      <i data-lucide="check-circle-2" style="width: 16px; height: 16px; color: var(--success); flex-shrink: 0;"></i>
+                      Logged: ${loggedNames}
+                    </div>
+                    <div class="chat-table-wrapper" style="position: relative; margin-top: 6px;">
+                      <button class="btn-edit-nutrients" data-id="${m.id}" data-type="food" title="Edit logged nutrients" style="position: absolute; top: -12px; right: -12px; background: var(--surface); border: 1.5px solid var(--border-visible); border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--primary); box-shadow: var(--shadow); z-index: 10;">
+                        <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
+                      </button>
+                      <table class="chat-table">
+                        <thead>
+                          <tr>
+                            <th style="font-weight: 700;">Item</th>
+                            <th style="text-align: right; font-weight: 700;">Qty</th>
+                            <th style="text-align: right; font-weight: 700;">kcal</th>
+                            <th style="text-align: right; font-weight: 700;">P</th>
+                            <th style="text-align: right; font-weight: 700;">C</th>
+                            <th style="text-align: right; font-weight: 700;">F</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${tableRows}
+                          <tr style="font-weight: 700; border-top: 1.5px solid var(--border);">
+                            <td>Total</td>
+                            <td style="text-align: right;">—</td>
+                            <td style="text-align: right; color: var(--primary);">${totalCalories}</td>
+                            <td style="text-align: right;">${totalProtein}g</td>
+                            <td style="text-align: right;">${totalCarbs}g</td>
+                            <td style="text-align: right;">${totalFat}g</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 0.65rem; opacity: 0.6;">
+                      <span style="font-style: italic;">Model: ${m.modelUsed || 'Llama 3.3 70B'}</span>
+                      <span class="chat-bubble-time" style="margin: 0; font-size: 0.65rem;">${m.time}</span>
                     </div>
                   </div>
-                  <div class="entry-value-box">
-                    <span class="entry-calories">-${e.caloriesBurned} kcal</span>
-                    <button class="delete-btn btn-delete-exercise" data-id="${e.id}"><i data-lucide="trash-2"></i></button>
+                </div>
+              `;
+            }
+            
+            // Assistant bubble with exercise log table
+            if (m.messageType === 'exercise') {
+              const msgExercises = state.exerciseEntries.filter(e => e.messageId === m.id);
+              if (msgExercises.length === 0) return ''; // Deleted -> disappear!
+              
+              let totalBurned = 0;
+              const tableRows = msgExercises.map(e => {
+                totalBurned += e.caloriesBurned;
+                return `
+                  <tr>
+                    <td style="font-weight: 500;">${e.name}</td>
+                    <td style="text-align: right;">${e.duration} mins</td>
+                    <td style="text-align: right; color: var(--color-exercise); font-weight: 700;">-${e.caloriesBurned} kcal</td>
+                  </tr>
+                `;
+              }).join('');
+              
+              const loggedNames = msgExercises.map(e => e.name).join(', ');
+              
+              return `
+                <div class="chat-bubble-row assistant">
+                  <div class="chat-bubble has-table" style="position: relative; padding-right: 12px;">
+                    <div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+                      <i data-lucide="check-circle-2" style="width: 16px; height: 16px; color: var(--color-exercise); flex-shrink: 0;"></i>
+                      Logged: ${loggedNames}
+                    </div>
+                    <div class="chat-table-wrapper" style="position: relative; margin-top: 6px;">
+                      <button class="btn-edit-nutrients" data-id="${m.id}" data-type="exercise" title="Edit logged exercise" style="position: absolute; top: -12px; right: -12px; background: var(--surface); border: 1.5px solid var(--border-visible); border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--primary); box-shadow: var(--shadow); z-index: 10;">
+                        <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
+                      </button>
+                      <table class="chat-table">
+                        <thead>
+                          <tr>
+                            <th style="font-weight: 700;">Workout</th>
+                            <th style="text-align: right; font-weight: 700;">Min</th>
+                            <th style="text-align: right; font-weight: 700;">Burn</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${tableRows}
+                          <tr style="font-weight: 700; border-top: 1.5px solid var(--border);">
+                            <td>Total Burned</td>
+                            <td style="text-align: right;">—</td>
+                            <td style="text-align: right; color: var(--color-exercise); font-weight: 700;">-${totalBurned} kcal</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 0.65rem; opacity: 0.6;">
+                      <span style="font-style: italic;">Model: ${m.modelUsed || 'Llama 3.3 70B'}</span>
+                      <span class="chat-bubble-time" style="margin: 0; font-size: 0.65rem;">${m.time}</span>
+                    </div>
                   </div>
                 </div>
-              `).join('')}
-            </div>
-          </div>
-        ` : ''}
-        
-        <!-- Bottom scroll spacer to guarantee no elements leak under the floating input capsule -->
-        <div class="chat-bottom-spacer" style="height: 80px; flex-shrink: 0; width: 100%;"></div>
-      </div>
-
-      <!-- Bottom entry chat bar -->
-      <div class="chat-input-bar">
-        <input type="text" id="chat-input" placeholder="Type logs e.g. 'I had 3 boiled eggs and black coffee'..." />
-        <button class="chat-send-btn" id="btn-send-chat">
-          <i data-lucide="send"></i>
-        </button>
-      </div>
-    </div>
-  `;
+              `;
+            }
+            
+            // Standard assistant text bubble
+            return `
+              <div class="chat-bubble-row assistant">
+                <div class="chat-bubble">
+                  <div>${m.content}</div>
+                  <div class="chat-bubble-time">${m.time}</div>
+                </div>
+              </div>
+            `;
+        }).join('')}
+ 
+         ${state.isProcessingChat ? `
+           <div class="chat-loader">
+             <div class="chat-loader-dot"></div>
+             <div class="chat-loader-dot"></div>
+             <div class="chat-loader-dot"></div>
+           </div>
+         ` : ''}
+ 
+         <!-- Today's logged items checklist directly inside scroller so it never gets cut off -->
+         ${activeFoods.length > 0 || activeExercises.length > 0 ? `
+           <div class="today-logs-box" style="margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 16px;">
+             <h4 style="font-size: 0.9rem; font-weight: 700; margin-bottom: 12px; color: var(--on-surface-variant);">Logged Items Today</h4>
+             <div class="entries-list">
+               ${activeFoods.map(f => `
+                 <div class="entry-card food">
+                   <div class="entry-info">
+                     <div class="entry-icon"><i data-lucide="utensils"></i></div>
+                     <div class="entry-detail-box">
+                       <span class="entry-name">${f.name}</span>
+                       <span class="entry-subtext">${f.servingSize ? `<b>${f.servingSize}</b> · ` : ''}P: ${f.proteinG}g · C: ${f.carbsG}g · F: ${f.fatG}g</span>
+                     </div>
+                   </div>
+                   <div class="entry-value-box">
+                     <span class="entry-calories">${f.calories} kcal</span>
+                     <button class="delete-btn btn-delete-food" data-id="${f.id}"><i data-lucide="trash-2"></i></button>
+                   </div>
+                 </div>
+               `).join('')}
+               
+               ${activeExercises.map(e => `
+                 <div class="entry-card exercise">
+                   <div class="entry-info">
+                     <div class="entry-icon"><i data-lucide="dumbbell"></i></div>
+                     <div class="entry-detail-box">
+                       <span class="entry-name">${e.name}</span>
+                       <span class="entry-subtext">${e.duration} mins</span>
+                     </div>
+                   </div>
+                   <div class="entry-value-box">
+                     <span class="entry-calories">-${e.caloriesBurned} kcal</span>
+                     <button class="delete-btn btn-delete-exercise" data-id="${e.id}"><i data-lucide="trash-2"></i></button>
+                   </div>
+                 </div>
+               `).join('')}
+             </div>
+           </div>
+         ` : ''}
+         
+         <!-- Bottom scroll spacer to guarantee no elements leak under the floating input capsule -->
+         <div class="chat-bottom-spacer" style="height: 80px; flex-shrink: 0; width: 100%;"></div>
+       </div>
+ 
+       <!-- Bottom entry chat bar -->
+       <div class="chat-input-bar">
+         <input type="text" id="chat-input" placeholder="Type logs e.g. 'I had 3 boiled eggs and black coffee'..." />
+         <button class="chat-send-btn" id="btn-send-chat">
+           <i data-lucide="send"></i>
+         </button>
+       </div>
+     </div>
+   `;
 }
 
 function renderMacroBar(label, current, goal, unit, color) {
   const percent = goal > 0 ? Math.min(100, Math.round((current / goal) * 100)) : 0;
+  const macroName = label.toLowerCase();
+  const isActive = state.selectedMacroView === macroName;
+  const activeStyle = isActive ? `border: 1.5px solid ${color}; background-color: var(--surface-variant);` : '';
+  
   return `
-    <div class="macro-bar-container">
+    <div class="macro-bar-container macro-clickable" data-macro="${macroName}" style="padding: 6px 8px; border-radius: 12px; cursor: pointer; transition: all 0.2s ease; ${activeStyle}">
       <div class="macro-bar-info">
-        <span class="macro-bar-label">${label}</span>
-        <span class="macro-bar-value">${Math.round(current)}${unit} / ${goal}${unit} (${percent}%)</span>
+        <span class="macro-bar-label" style="font-weight: 700; font-size: 0.8rem;">${label}</span>
+        <span class="macro-bar-value" style="font-size: 0.75rem;">${Math.round(current)}${unit} / ${goal}${unit} (${percent}%)</span>
       </div>
-      <div class="macro-bar-track">
-        <div class="macro-bar-fill" style="width: ${percent}%; background-color: ${color}"></div>
+      <div class="macro-bar-track" style="height: 6px; background-color: var(--border);">
+        <div class="macro-bar-fill" style="width: ${percent}%; background-color: ${color}; height: 100%; border-radius: 3px;"></div>
       </div>
     </div>
   `;
@@ -1619,11 +1926,34 @@ function attachEventListeners() {
     });
   });
 
+  // Collapsible sidebar backdrop close trigger
+  const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+  if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener('click', () => {
+      state.isSidebarOpen = false;
+      mountApp();
+    });
+  }
+
+  // Interactive macro dashboard clicks (Power-BI style)
+  document.querySelectorAll('.macro-clickable').forEach(item => {
+    item.addEventListener('click', () => {
+      state.selectedMacroView = item.dataset.macro;
+      mountApp();
+    });
+  });
+
   // Food and exercise log deletions
   document.querySelectorAll('.btn-delete-food').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = parseFloat(btn.dataset.id);
-      state.foodEntries = state.foodEntries.filter(f => f.id !== id);
+      const food = state.foodEntries.find(f => f.id === id);
+      if (food && food.messageId) {
+        state.chatMessages = state.chatMessages.filter(m => m.id !== food.messageId);
+        state.foodEntries = state.foodEntries.filter(f => f.messageId !== food.messageId);
+      } else {
+        state.foodEntries = state.foodEntries.filter(f => f.id !== id);
+      }
       saveStateToStorage();
       mountApp();
     });
@@ -1632,11 +1962,127 @@ function attachEventListeners() {
   document.querySelectorAll('.btn-delete-exercise').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = parseFloat(btn.dataset.id);
-      state.exerciseEntries = state.exerciseEntries.filter(e => e.id !== id);
+      const exercise = state.exerciseEntries.find(e => e.id === id);
+      if (exercise && exercise.messageId) {
+        state.chatMessages = state.chatMessages.filter(m => m.id !== exercise.messageId);
+        state.exerciseEntries = state.exerciseEntries.filter(e => e.messageId !== exercise.messageId);
+      } else {
+        state.exerciseEntries = state.exerciseEntries.filter(e => e.id !== id);
+      }
       saveStateToStorage();
       mountApp();
     });
   });
+
+  // Edit logged nutrients modal trigger buttons
+  document.querySelectorAll('.btn-edit-nutrients').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.editingMessageId = parseFloat(btn.dataset.id);
+      state.editingMessageType = btn.dataset.type;
+      mountApp();
+    });
+  });
+
+  // Cancel nutrient editor modal
+  const btnCancelModal = document.getElementById('btn-cancel-modal');
+  if (btnCancelModal) {
+    btnCancelModal.addEventListener('click', () => {
+      state.editingMessageId = null;
+      state.editingMessageType = null;
+      mountApp();
+    });
+  }
+
+  // Save nutrient editor changes
+  const btnSaveModal = document.getElementById('btn-save-modal');
+  if (btnSaveModal) {
+    btnSaveModal.addEventListener('click', () => {
+      const isFood = state.editingMessageType === 'food';
+      const editRows = document.querySelectorAll('.modal-edit-row');
+      
+      editRows.forEach(row => {
+        const id = parseFloat(row.dataset.id);
+        if (isFood) {
+          const entry = state.foodEntries.find(f => f.id === id);
+          if (entry) {
+            const editName = row.querySelector('.edit-food-name');
+            const editServing = row.querySelector('.edit-food-serving');
+            const editCals = row.querySelector('.edit-food-calories');
+            const editProt = row.querySelector('.edit-food-protein');
+            const editCarbs = row.querySelector('.edit-food-carbs');
+            const editFat = row.querySelector('.edit-food-fat');
+            
+            if (editName) entry.name = editName.value.trim();
+            if (editServing) entry.servingSize = editServing.value.trim();
+            if (editCals) entry.calories = Math.round(parseFloat(editCals.value) || 0);
+            if (editProt) entry.proteinG = Math.round(parseFloat(editProt.value) || 0);
+            if (editCarbs) entry.carbsG = Math.round(parseFloat(editCarbs.value) || 0);
+            if (editFat) entry.fatG = Math.round(parseFloat(editFat.value) || 0);
+          }
+        } else {
+          const entry = state.exerciseEntries.find(e => e.id === id);
+          if (entry) {
+            const editName = row.querySelector('.edit-exercise-name');
+            const editDuration = row.querySelector('.edit-exercise-duration');
+            const editCals = row.querySelector('.edit-exercise-calories');
+            
+            if (editName) entry.name = editName.value.trim();
+            if (editDuration) entry.duration = Math.round(parseFloat(editDuration.value) || 0);
+            if (editCals) entry.caloriesBurned = Math.round(parseFloat(editCals.value) || 0);
+          }
+        }
+      });
+      
+      state.editingMessageId = null;
+      state.editingMessageType = null;
+      saveStateToStorage();
+      mountApp();
+      showToast('Logged entries updated successfully!', 'success');
+    });
+  }
+
+  // Delete row inside nutrient editor modal
+  document.querySelectorAll('.btn-delete-row').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseFloat(btn.dataset.id);
+      const type = btn.dataset.type;
+      const msgId = state.editingMessageId;
+      
+      if (type === 'food') {
+        state.foodEntries = state.foodEntries.filter(f => f.id !== id);
+        const remaining = state.foodEntries.filter(f => f.messageId === msgId);
+        if (remaining.length === 0) {
+          state.chatMessages = state.chatMessages.filter(m => m.id !== msgId);
+          state.editingMessageId = null;
+          state.editingMessageType = null;
+        }
+      } else {
+        state.exerciseEntries = state.exerciseEntries.filter(e => e.id !== id);
+        const remaining = state.exerciseEntries.filter(e => e.messageId === msgId);
+        if (remaining.length === 0) {
+          state.chatMessages = state.chatMessages.filter(m => m.id !== msgId);
+          state.editingMessageId = null;
+          state.editingMessageType = null;
+        }
+      }
+      
+      saveStateToStorage();
+      mountApp();
+      showToast('Item deleted successfully!', 'info');
+    });
+  });
+
+  // Magnified modal close when clicking outer overlay backdrop
+  const magnifiedModal = document.getElementById('magnified-modal');
+  if (magnifiedModal) {
+    magnifiedModal.addEventListener('click', (e) => {
+      if (e.target === magnifiedModal) {
+        state.editingMessageId = null;
+        state.editingMessageType = null;
+        mountApp();
+      }
+    });
+  }
 
   // Sending chat text logs
   const btnSendChat = document.getElementById('btn-send-chat');
@@ -1680,26 +2126,17 @@ function attachEventListeners() {
         parsed.message = "I couldn't identify any exercise items in your message. Try saying something like 'walked for 45 minutes'!";
       }
 
+      const assistantMsgId = Date.now() + 1; // Unique ID for assistant response
+      const modelName = parsed.modelUsed || state.openRouterModel || 'gemini-2.5-flash';
+
       if (parsed.type === 'error') {
         reply = `⚠️ AI failed: ${parsed.message}`;
       } else if (parsed.type === 'food') {
-        const loggedNames = [];
-        let totalCalories = 0;
-        let totalProtein = 0;
-        let totalCarbs = 0;
-        let totalFat = 0;
-        let tableRows = "";
-
         parsed.items.forEach(item => {
           const cals = Math.round(item.calories || 0);
           const prot = Math.round(item.protein_g || item.proteinG || 0);
           const carb = Math.round(item.carbs_g || item.carbsG || 0);
           const fat = Math.round(item.fat_g || item.fatG || 0);
-
-          totalCalories += cals;
-          totalProtein += prot;
-          totalCarbs += carb;
-          totalFat += fat;
 
           const itemQty = item.serving_size || item.servingSize || "1 serving (assumed)";
           const foodEntry = {
@@ -1711,61 +2148,16 @@ function attachEventListeners() {
             carbsG: carb,
             fatG: fat,
             servingSize: itemQty,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            messageId: assistantMsgId
           };
           state.foodEntries.push(foodEntry);
-          loggedNames.push(item.name);
-
-          tableRows += `
-            <tr>
-              <td style="font-weight: 500;">${item.name}</td>
-              <td style="text-align: right; font-style: italic; opacity: 0.85;">${itemQty}</td>
-              <td style="text-align: right;">${cals}</td>
-              <td style="text-align: right;">${prot}g</td>
-              <td style="text-align: right;">${carb}g</td>
-              <td style="text-align: right;">${fat}g</td>
-            </tr>
-          `;
         });
 
-        reply += `<div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px;"><i data-lucide="check-circle-2" style="width: 16px; height: 16px; color: var(--success); flex-shrink: 0;"></i> Logged: ${loggedNames.join(', ')}</div>`;
-        reply += `
-          <div class="chat-table-wrapper">
-            <table class="chat-table">
-              <thead>
-                <tr>
-                  <th style="font-weight: 700;">Item</th>
-                  <th style="text-align: right; font-weight: 700;">Qty</th>
-                  <th style="text-align: right; font-weight: 700;">kcal</th>
-                  <th style="text-align: right; font-weight: 700;">P</th>
-                  <th style="text-align: right; font-weight: 700;">C</th>
-                  <th style="text-align: right; font-weight: 700;">F</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${tableRows}
-                <tr style="font-weight: 700; border-top: 1.5px solid var(--border);">
-                  <td>Total</td>
-                  <td style="text-align: right;">—</td>
-                  <td style="text-align: right; color: var(--primary);">${totalCalories}</td>
-                  <td style="text-align: right;">${totalProtein}g</td>
-                  <td style="text-align: right;">${totalCarbs}g</td>
-                  <td style="text-align: right;">${totalFat}g</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        `;
       } else if (parsed.type === 'exercise') {
-        const loggedNames = [];
-        let totalBurned = 0;
-        let tableRows = "";
-
         parsed.items.forEach(item => {
           const mins = Math.round(item.duration_minutes || item.durationMinutes || 0);
           const burned = Math.round(item.calories_burned || item.caloriesBurned || 0);
-
-          totalBurned += burned;
 
           const exerciseEntry = {
             id: Date.now() + Math.random(),
@@ -1773,42 +2165,12 @@ function attachEventListeners() {
             name: item.name,
             duration: mins,
             caloriesBurned: burned,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            messageId: assistantMsgId
           };
           state.exerciseEntries.push(exerciseEntry);
-          loggedNames.push(item.name);
-
-          tableRows += `
-            <tr>
-              <td style="font-weight: 500;">${item.name}</td>
-              <td style="text-align: right;">${mins} mins</td>
-              <td style="text-align: right; color: var(--color-exercise); font-weight: 700;">-${burned} kcal</td>
-            </tr>
-          `;
         });
 
-        reply += `<div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px;"><i data-lucide="check-circle-2" style="width: 16px; height: 16px; color: var(--color-exercise); flex-shrink: 0;"></i> Logged: ${loggedNames.join(', ')}</div>`;
-        reply += `
-          <div class="chat-table-wrapper">
-            <table class="chat-table">
-              <thead>
-                <tr>
-                  <th style="font-weight: 700;">Workout</th>
-                  <th style="text-align: right; font-weight: 700;">Min</th>
-                  <th style="text-align: right; font-weight: 700;">Burn</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${tableRows}
-                <tr style="font-weight: 700; border-top: 1.5px solid var(--border);">
-                  <td>Total Burned</td>
-                  <td style="text-align: right;">—</td>
-                  <td style="text-align: right; color: var(--color-exercise); font-weight: 700;">-${totalBurned} kcal</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        `;
       } else if (parsed.type === 'unknown') {
         const msg = parsed.message || "I couldn't identify any specific food or exercise in your message. Try saying something like 'I had 3 scrambled eggs' or 'jogged for 30 minutes'!";
         reply += `⚠️ ${msg}`;
@@ -1816,10 +2178,12 @@ function attachEventListeners() {
 
       // Append assistant reply bubble
       state.chatMessages.push({
-        id: Date.now(),
+        id: assistantMsgId,
         dateStr: state.selectedDateStr,
-        content: reply,
+        content: parsed.type === 'food' || parsed.type === 'exercise' ? '' : reply,
         isUser: false,
+        messageType: parsed.type,
+        modelUsed: modelName,
         hasTable: parsed.type === 'food' || parsed.type === 'exercise',
         time: new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
       });

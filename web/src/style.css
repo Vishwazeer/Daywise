@@ -1773,3 +1773,86 @@ tr.total-row td {
   100% { transform: scale(1.15); opacity: 1; }
 }
 
+/* Separator line between calorie count and macronutrients in logged items list */
+.entry-value-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-left: 1.5px solid var(--border-visible);
+  padding-left: 12px;
+  height: 28px;
+}
+
+/* Collapsible sidebar backdrop */
+.sidebar-backdrop {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  width: 100% !important;
+  height: 100% !important;
+  background-color: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 199; /* Below sidebar at 200 */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease-in-out;
+  border-radius: 28px !important;
+}
+.sidebar-backdrop.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Magnified Nutrient Table Modal Overlay and Content */
+.magnified-modal-overlay {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  width: 100% !important;
+  height: 100% !important;
+  background-color: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease-in-out;
+  border-radius: 28px !important;
+}
+.magnified-modal-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+.magnified-modal-content {
+  background-color: var(--surface);
+  color: var(--on-surface);
+  border-radius: 24px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.3);
+  width: 90%;
+  max-width: 360px;
+  padding: 20px;
+  transform: scale(0.85);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  border: 1.5px solid var(--border-visible);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.magnified-modal-overlay.active .magnified-modal-content {
+  transform: scale(1);
+}
+
+/* Interactive Macro clickable styling */
+.macro-clickable {
+  transition: all 0.2s ease;
+  border: 1.5px solid transparent;
+}
+.macro-clickable:hover {
+  background-color: var(--surface-variant);
+  border-color: var(--border-visible);
+}
+

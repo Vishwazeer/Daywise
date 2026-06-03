@@ -95,7 +95,7 @@ async function callOpenRouterCompletionWithFallback(prompt, apiKey, preferredMod
       }
 
       console.info(`OpenRouter SDK model ${model} succeeded!`);
-      return rawText;
+      return { text: rawText, modelUsed: model };
     } catch (err) {
       console.warn(`OpenRouter SDK model ${model} caught error: ${err.message}`);
       lastError = err;
@@ -111,8 +111,10 @@ async function callOpenRouterCompletionWithFallback(prompt, apiKey, preferredMod
 export async function parseInputWithOpenRouter(userText, apiKey, model, systemPrompt, cleanAndParseFn) {
   try {
     const prompt = `${systemPrompt}\n\nUser input: ${userText}`;
-    const rawText = await callOpenRouterCompletionWithFallback(prompt, apiKey, model, true);
-    return cleanAndParseFn(rawText);
+    const { text, modelUsed } = await callOpenRouterCompletionWithFallback(prompt, apiKey, model, true);
+    const parsed = cleanAndParseFn(text);
+    parsed.modelUsed = modelUsed;
+    return parsed;
   } catch (err) {
     console.error("OpenRouter chatbot parsing failed:", err);
     return { type: "error", message: err.message || "OpenRouter connection failed" };
@@ -124,15 +126,15 @@ export async function parseInputWithOpenRouter(userText, apiKey, model, systemPr
  */
 export async function callOpenRouterGeneric(prompt, apiKey, model) {
   try {
-    const rawText = await callOpenRouterCompletionWithFallback(prompt, apiKey, model, true);
+    const { text } = await callOpenRouterCompletionWithFallback(prompt, apiKey, model, true);
     
-    // Wrap rawText in a response-like object matching the fetch-response interface in main.js
+    // Wrap text in a response-like object matching the fetch-response interface in main.js
     return {
       ok: true,
       json: async () => ({
         candidates: [{
           content: {
-            parts: [{ text: rawText }]
+            parts: [{ text: text }]
           }
         }]
       })
