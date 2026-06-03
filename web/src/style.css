@@ -124,7 +124,7 @@ aside {
   flex-direction: column;
   z-index: 200;
   transform: translateX(-100%);
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
   box-shadow: var(--shadow-lg);
 }
 
@@ -266,19 +266,32 @@ header h1, header h2, header h3, header span, header p {
 }
 
 /* Calendar Strip Selection */
+.chat-header-area {
+  position: sticky;
+  top: 0;
+  background-color: var(--background);
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+}
+
 .calendar-strip {
   display: flex;
-  justify-content: space-between;
-  gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  gap: 8px;
   background-color: var(--surface);
-  padding: 8px;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  margin-bottom: 4px;
+  padding: 12px 16px 8px 16px;
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: none;
+}
+
+.calendar-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .day-cell {
-  flex: 1;
+  flex: 0 0 46px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -332,8 +345,114 @@ header h1, header h2, header h3, header span, header p {
   margin-top: 2px;
 }
 
-/* ── Spacious Compact Header Summary Dashboard ───────────────────────────── */
+/* ── YouTube Calorie Progress Bar ── */
+.calorie-progress-container {
+  width: 100%;
+  background-color: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  transition: background-color 0.2s ease;
+}
+
+.calorie-progress-container:hover {
+  background-color: var(--surface-variant);
+}
+
+.calorie-progress-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.calorie-progress-left .progress-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--on-surface);
+}
+
+.calorie-progress-left .progress-subtext {
+  font-size: 0.6rem;
+  color: var(--on-surface-variant);
+}
+
+.calorie-progress-center {
+  flex: 1;
+  padding: 0 4px;
+}
+
+.yt-progress-track {
+  height: 4px;
+  background-color: var(--border-visible);
+  border-radius: 2px;
+  position: relative;
+  overflow: visible;
+  transition: height 0.15s ease;
+}
+
+.calorie-progress-container:hover .yt-progress-track {
+  height: 6px;
+}
+
+.yt-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  position: relative;
+  transition: width 0.4s cubic-bezier(0.1, 0.8, 0.25, 1);
+}
+
+.yt-progress-scrubber {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: inherit;
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%) scale(0);
+  transition: transform 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.calorie-progress-container:hover .yt-progress-scrubber {
+  transform: translateY(-50%) scale(1);
+}
+
+.calorie-progress-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.calorie-progress-right .progress-values {
+  font-size: 0.75rem;
+  color: var(--on-surface-variant);
+}
+
+.calorie-progress-right .dropdown-arrow {
+  width: 16px;
+  height: 16px;
+  color: var(--on-surface-variant);
+  transition: transform 0.2s ease;
+}
+
+.calorie-progress-container.open .dropdown-arrow {
+  transform: rotate(180deg);
+}
+
+/* ── Collapsible Spacious Compact Header Summary Dashboard ── */
 .overview-grid {
+  position: absolute;
+  top: 100%;
+  left: 16px;
+  right: 16px;
+  z-index: 200;
   display: grid;
   grid-template-columns: 100px 1fr;
   gap: 16px;
@@ -342,6 +461,27 @@ header h1, header h2, header h3, header span, header p {
   padding: 14px;
   border-radius: 18px;
   align-items: center;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+
+  /* Collapsible Transitions */
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border: none;
+  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.overview-grid.active {
+  max-height: 250px;
+  opacity: 1;
+  padding-top: 14px !important;
+  padding-bottom: 14px !important;
+  border: 1px solid var(--border);
+  margin-top: 8px;
+  pointer-events: auto;
 }
 
 .calorie-ring-box {
@@ -380,27 +520,32 @@ header h1, header h2, header h3, header span, header p {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-align: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  overflow: hidden;
 }
 
 .ring-num {
   font-family: var(--font-display);
-  font-size: 1.3rem;
+  font-size: 1.15rem;
   font-weight: 800;
-  line-height: 1;
+  line-height: 1.1;
 }
 
 .ring-goal {
-  font-size: 0.65rem;
+  font-size: 0.55rem;
   color: var(--on-surface-variant);
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .ring-left {
-  font-size: 0.65rem;
+  font-size: 0.55rem;
   color: var(--color-calories);
   font-weight: 700;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .macro-bars {
@@ -1407,6 +1552,7 @@ tr.total-row td {
     position: fixed; /* fixed on mobile - stays in place during scroll */
     transform: translateX(-100%);
     z-index: 200;
+    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
   }
   aside.drawer-open {
     transform: translateX(0);
@@ -1855,4 +2001,26 @@ tr.total-row td {
   background-color: var(--surface-variant);
   border-color: var(--border-visible);
 }
+
+/* AI Weekly Insights Card collapse styling */
+.insight-card .insight-content-wrapper {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease;
+}
+
+.insight-card.open .insight-content-wrapper {
+  max-height: 1200px;
+  opacity: 1;
+}
+
+.insight-card .dropdown-arrow {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.insight-card.open .dropdown-arrow {
+  transform: rotate(180deg);
+}
+
 
