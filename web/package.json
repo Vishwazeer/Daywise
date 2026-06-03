@@ -13,6 +13,7 @@
     "vite-plugin-singlefile": "^2.3.3"
   },
   "dependencies": {
+    "@openrouter/sdk": "^0.12.79",
     "lucide": "^1.17.0"
   }
 }
