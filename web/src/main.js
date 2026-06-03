@@ -80,6 +80,12 @@ const state = {
   isGeneratingDiet: false,
   isGeneratingRecipe: false,
   selectedMacroView: 'calories',
+  isNutritionDropdownOpen: JSON.parse(localStorage.getItem('isNutritionDropdownOpen') || 'false'),
+  dietCalorieGoal: JSON.parse(localStorage.getItem('dietCalorieGoal') || localStorage.getItem('dailyCalorieGoal') || '2000'),
+  weeklyInsights: JSON.parse(localStorage.getItem('weeklyInsights') || '{}'),
+  isGeneratingWeeklyInsights: false,
+  isWeeklyInsightsOpen: JSON.parse(localStorage.getItem('isWeeklyInsightsOpen') || 'true'),
+  lastProgress: JSON.parse(localStorage.getItem('lastProgress') || '{"caloriePercent":0,"offset":314.159,"macros":{"protein":0,"carbs":0,"fat":0}}'),
   
   // Expanded days in weekly diet planner
   expandedPlanDays: JSON.parse(localStorage.getItem('expandedPlanDays') || '{}')
@@ -159,6 +165,11 @@ function saveStateToStorage() {
   localStorage.setItem('chefFlavorProfile', state.chefFlavorProfile);
   localStorage.setItem('generatedRecipe', JSON.stringify(state.generatedRecipe));
   localStorage.setItem('expandedPlanDays', JSON.stringify(state.expandedPlanDays));
+  localStorage.setItem('isNutritionDropdownOpen', JSON.stringify(state.isNutritionDropdownOpen));
+  localStorage.setItem('dietCalorieGoal', JSON.stringify(state.dietCalorieGoal));
+  localStorage.setItem('weeklyInsights', JSON.stringify(state.weeklyInsights));
+  localStorage.setItem('isWeeklyInsightsOpen', JSON.stringify(state.isWeeklyInsightsOpen));
+  localStorage.setItem('lastProgress', JSON.stringify(state.lastProgress));
 }
 
 function showToast(message, type = 'info') {
@@ -845,6 +856,7 @@ function onboardingOverlayTemplate() {
   `;
 }
 
+
 // ── Chat Screen UI ───────────────────────────────────────────────────────────
 function renderChatScreen() {
   const summary = getDailyNutritionSummary(state.selectedDateStr);
@@ -855,7 +867,7 @@ function renderChatScreen() {
   const proteinGoalG = Math.round((state.dailyCalorieGoal * state.proteinPercent / 100) / 4);
   const fatGoalG = Math.round((state.dailyCalorieGoal * state.fatPercent / 100) / 9);
 
-  let ringProgress = 0;
+  let ringProgress = state.dailyCalorieGoal > 0 ? (summary.totalCalories / state.dailyCalorieGoal) : 0;
   let ringColor = 'var(--color-calories)';
   let trackColor = 'rgba(235, 94, 40, 0.08)'; // based on calories
   let numText = summary.totalCalories;
@@ -895,39 +907,66 @@ function renderChatScreen() {
   const activeExercises = state.exerciseEntries.filter(e => e.dateStr === state.selectedDateStr);
 
   const isCalorieActive = state.selectedMacroView === 'calories';
-  const ringActiveStyle = isCalorieActive ? 'border: 1.5px solid var(--color-calories); background-color: var(--surface-variant);' : '';
+  const ringActiveStyle = isCalorieActive ? 'background-color: var(--surface-variant);' : '';
+  const consumed = summary.totalCalories;
+  const goal = state.dailyCalorieGoal;
+  const caloriePercent = goal > 0 ? Math.min(100, Math.round((consumed / goal) * 100)) : 0;
+
+  const initialCaloriePercent = state.lastProgress && state.lastProgress.caloriePercent !== undefined ? state.lastProgress.caloriePercent : 0;
+  const initialOffset = state.lastProgress && state.lastProgress.offset !== undefined ? state.lastProgress.offset : circumference;
 
   return `
     <div class="chat-container">
-      <!-- Calendar strip selector -->
-      ${renderCalendarStrip(activeDate)}
+      <div class="chat-header-area">
+        <!-- Calendar strip selector -->
+        ${renderCalendarStrip(activeDate)}
 
-      <!-- Dashboard stats summary -->
-      <div class="overview-grid">
-        <div class="calorie-ring-box macro-clickable" data-macro="calories" style="cursor: pointer; padding: 6px; border-radius: 50%; transition: all 0.2s ease; ${ringActiveStyle}">
-          <svg viewBox="0 0 120 120">
-            <circle class="track" cx="60" cy="60" r="50" style="stroke: ${trackColor}"></circle>
-            <circle class="fill" cx="60" cy="60" r="50" stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" style="stroke: ${ringColor}"></circle>
-          </svg>
-          <div class="calorie-ring-center">
-            <span class="ring-num">${numText}</span>
-            <span class="ring-goal" style="font-size: 0.6rem; opacity: 0.8;">${goalText}</span>
-            <span class="ring-left" style="font-size: 0.6rem; font-weight: 700; color: ${ringColor};">${leftText}</span>
+        <!-- Calorie YouTube Progress Bar Dropdown Trigger -->
+        <div class="calorie-progress-container ${state.isNutritionDropdownOpen ? 'open' : ''}" id="btn-toggle-nutrition-dropdown" title="Toggle detailed nutrition metrics">
+          <div class="calorie-progress-left">
+            <span class="progress-label">Calorie Tracker</span>
+            <span class="progress-subtext">${caloriePercent}% of daily budget</span>
+          </div>
+          <div class="calorie-progress-center">
+            <div class="yt-progress-track">
+              <div class="yt-progress-fill" data-target-percent="${caloriePercent}" style="width: ${initialCaloriePercent}%; background-color: var(--color-calories);">
+                <div class="yt-progress-scrubber"></div>
+              </div>
+            </div>
+          </div>
+          <div class="calorie-progress-right">
+            <span class="progress-values"><b>${consumed}</b> / ${goal} kcal</span>
+            <i data-lucide="chevron-down" class="dropdown-arrow"></i>
           </div>
         </div>
 
-        <div class="macro-bars">
-          ${renderMacroBar("Protein", summary.totalProtein, proteinGoalG, "g", "var(--color-protein)")}
-          ${renderMacroBar("Carbs", summary.totalCarbs, carbsGoalG, "g", "var(--color-carbs)")}
-          ${renderMacroBar("Fat", summary.totalFat, fatGoalG, "g", "var(--color-fat)")}
-        </div>
-
-        ${summary.exerciseCalories > 0 ? `
-          <div class="exercise-summary">
-            <i data-lucide="dumbbell"></i>
-            <span>${summary.exerciseCalories} kcal burned from workouts</span>
+        <!-- Dashboard stats summary (collapsible) -->
+        <div class="overview-grid ${state.isNutritionDropdownOpen ? 'active' : ''}">
+          <div class="calorie-ring-box macro-clickable" data-macro="calories" style="cursor: pointer; padding: 6px; border-radius: 50%; transition: all 0.2s ease; ${ringActiveStyle}">
+            <svg viewBox="0 0 120 120">
+              <circle class="track" cx="60" cy="60" r="50" style="stroke: ${trackColor}"></circle>
+              <circle class="fill" cx="60" cy="60" r="50" stroke-dasharray="${circumference}" stroke-dashoffset="${initialOffset}" style="stroke: ${ringColor}" data-target-offset="${offset}"></circle>
+            </svg>
+            <div class="calorie-ring-center">
+              <span class="ring-num">${numText}</span>
+              <span class="ring-goal">${goalText}</span>
+              <span class="ring-left" style="color: ${ringColor};">${leftText}</span>
+            </div>
           </div>
-        ` : ''}
+
+          <div class="macro-bars">
+            ${renderMacroBar("Protein", summary.totalProtein, proteinGoalG, "g", "var(--color-protein)")}
+            ${renderMacroBar("Carbs", summary.totalCarbs, carbsGoalG, "g", "var(--color-carbs)")}
+            ${renderMacroBar("Fat", summary.totalFat, fatGoalG, "g", "var(--color-fat)")}
+          </div>
+
+          ${summary.exerciseCalories > 0 ? `
+            <div class="exercise-summary">
+              <i data-lucide="dumbbell"></i>
+              <span>${summary.exerciseCalories} kcal burned from workouts</span>
+            </div>
+          ` : ''}
+        </div>
       </div>
 
       <!-- Messages View -->
@@ -980,15 +1019,15 @@ function renderChatScreen() {
               
               return `
                 <div class="chat-bubble-row assistant">
-                  <div class="chat-bubble has-table" style="position: relative; padding-right: 12px;">
-                    <div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+                  <div class="chat-bubble has-table" style="position: relative; padding-right: 48px;">
+                    <div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding-right: 8px;">
                       <i data-lucide="check-circle-2" style="width: 16px; height: 16px; color: var(--success); flex-shrink: 0;"></i>
                       Logged: ${loggedNames}
                     </div>
-                    <div class="chat-table-wrapper" style="position: relative; margin-top: 6px;">
-                      <button class="btn-edit-nutrients" data-id="${m.id}" data-type="food" title="Edit logged nutrients" style="position: absolute; top: -12px; right: -12px; background: var(--surface); border: 1.5px solid var(--border-visible); border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--primary); box-shadow: var(--shadow); z-index: 10;">
-                        <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
-                      </button>
+                    <button class="btn-edit-nutrients" data-id="${m.id}" data-type="food" title="Edit logged nutrients" style="position: absolute; top: 12px; right: 12px; background: var(--surface); border: 1.5px solid var(--border-visible); border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--primary); box-shadow: var(--shadow); z-index: 10;">
+                      <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
+                    </button>
+                    <div class="chat-table-wrapper" style="margin-top: 6px;">
                       <table class="chat-table">
                         <thead>
                           <tr>
@@ -1043,15 +1082,15 @@ function renderChatScreen() {
               
               return `
                 <div class="chat-bubble-row assistant">
-                  <div class="chat-bubble has-table" style="position: relative; padding-right: 12px;">
-                    <div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+                  <div class="chat-bubble has-table" style="position: relative; padding-right: 48px;">
+                    <div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding-right: 8px;">
                       <i data-lucide="check-circle-2" style="width: 16px; height: 16px; color: var(--color-exercise); flex-shrink: 0;"></i>
                       Logged: ${loggedNames}
                     </div>
-                    <div class="chat-table-wrapper" style="position: relative; margin-top: 6px;">
-                      <button class="btn-edit-nutrients" data-id="${m.id}" data-type="exercise" title="Edit logged exercise" style="position: absolute; top: -12px; right: -12px; background: var(--surface); border: 1.5px solid var(--border-visible); border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--primary); box-shadow: var(--shadow); z-index: 10;">
-                        <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
-                      </button>
+                    <button class="btn-edit-nutrients" data-id="${m.id}" data-type="exercise" title="Edit logged exercise" style="position: absolute; top: 12px; right: 12px; background: var(--surface); border: 1.5px solid var(--border-visible); border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--primary); box-shadow: var(--shadow); z-index: 10;">
+                      <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
+                    </button>
+                    <div class="chat-table-wrapper" style="margin-top: 6px;">
                       <table class="chat-table">
                         <thead>
                           <tr>
@@ -1089,68 +1128,68 @@ function renderChatScreen() {
               </div>
             `;
         }).join('')}
- 
-         ${state.isProcessingChat ? `
-           <div class="chat-loader">
-             <div class="chat-loader-dot"></div>
-             <div class="chat-loader-dot"></div>
-             <div class="chat-loader-dot"></div>
-           </div>
-         ` : ''}
- 
-         <!-- Today's logged items checklist directly inside scroller so it never gets cut off -->
-         ${activeFoods.length > 0 || activeExercises.length > 0 ? `
-           <div class="today-logs-box" style="margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 16px;">
-             <h4 style="font-size: 0.9rem; font-weight: 700; margin-bottom: 12px; color: var(--on-surface-variant);">Logged Items Today</h4>
-             <div class="entries-list">
-               ${activeFoods.map(f => `
-                 <div class="entry-card food">
-                   <div class="entry-info">
-                     <div class="entry-icon"><i data-lucide="utensils"></i></div>
-                     <div class="entry-detail-box">
-                       <span class="entry-name">${f.name}</span>
-                       <span class="entry-subtext">${f.servingSize ? `<b>${f.servingSize}</b> · ` : ''}P: ${f.proteinG}g · C: ${f.carbsG}g · F: ${f.fatG}g</span>
-                     </div>
-                   </div>
-                   <div class="entry-value-box">
-                     <span class="entry-calories">${f.calories} kcal</span>
-                     <button class="delete-btn btn-delete-food" data-id="${f.id}"><i data-lucide="trash-2"></i></button>
-                   </div>
-                 </div>
-               `).join('')}
-               
-               ${activeExercises.map(e => `
-                 <div class="entry-card exercise">
-                   <div class="entry-info">
-                     <div class="entry-icon"><i data-lucide="dumbbell"></i></div>
-                     <div class="entry-detail-box">
-                       <span class="entry-name">${e.name}</span>
-                       <span class="entry-subtext">${e.duration} mins</span>
-                     </div>
-                   </div>
-                   <div class="entry-value-box">
-                     <span class="entry-calories">-${e.caloriesBurned} kcal</span>
-                     <button class="delete-btn btn-delete-exercise" data-id="${e.id}"><i data-lucide="trash-2"></i></button>
-                   </div>
-                 </div>
-               `).join('')}
-             </div>
-           </div>
-         ` : ''}
-         
-         <!-- Bottom scroll spacer to guarantee no elements leak under the floating input capsule -->
-         <div class="chat-bottom-spacer" style="height: 80px; flex-shrink: 0; width: 100%;"></div>
-       </div>
- 
-       <!-- Bottom entry chat bar -->
-       <div class="chat-input-bar">
-         <input type="text" id="chat-input" placeholder="Type logs e.g. 'I had 3 boiled eggs and black coffee'..." />
-         <button class="chat-send-btn" id="btn-send-chat">
-           <i data-lucide="send"></i>
-         </button>
-       </div>
-     </div>
-   `;
+
+        ${state.isProcessingChat ? `
+          <div class="chat-loader">
+            <div class="chat-loader-dot"></div>
+            <div class="chat-loader-dot"></div>
+            <div class="chat-loader-dot"></div>
+          </div>
+        ` : ''}
+
+        <!-- Today's logged items checklist directly inside scroller so it never gets cut off -->
+        ${activeFoods.length > 0 || activeExercises.length > 0 ? `
+          <div class="today-logs-box" style="margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 16px;">
+            <h4 style="font-size: 0.9rem; font-weight: 700; margin-bottom: 12px; color: var(--on-surface-variant);">Logged Items Today</h4>
+            <div class="entries-list">
+              ${activeFoods.map(f => `
+                <div class="entry-card food">
+                  <div class="entry-info">
+                    <div class="entry-icon"><i data-lucide="utensils"></i></div>
+                    <div class="entry-detail-box">
+                      <span class="entry-name">${f.name}</span>
+                      <span class="entry-subtext">${f.servingSize ? `<b>${f.servingSize}</b> · ` : ''}P: ${f.proteinG}g · C: ${f.carbsG}g · F: ${f.fatG}g</span>
+                    </div>
+                  </div>
+                  <div class="entry-value-box">
+                    <span class="entry-calories">${f.calories} kcal</span>
+                    <button class="delete-btn btn-delete-food" data-id="${f.id}"><i data-lucide="trash-2"></i></button>
+                  </div>
+                </div>
+              `).join('')}
+              
+              ${activeExercises.map(e => `
+                <div class="entry-card exercise">
+                  <div class="entry-info">
+                    <div class="entry-icon"><i data-lucide="dumbbell"></i></div>
+                    <div class="entry-detail-box">
+                      <span class="entry-name">${e.name}</span>
+                      <span class="entry-subtext">${e.duration} mins</span>
+                    </div>
+                  </div>
+                  <div class="entry-value-box">
+                    <span class="entry-calories">-${e.caloriesBurned} kcal</span>
+                    <button class="delete-btn btn-delete-exercise" data-id="${e.id}"><i data-lucide="trash-2"></i></button>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+        
+        <!-- Bottom scroll spacer to guarantee no elements leak under the floating input capsule -->
+        <div class="chat-bottom-spacer" style="height: 80px; flex-shrink: 0; width: 100%;"></div>
+      </div>
+
+      <!-- Bottom entry chat bar -->
+      <div class="chat-input-bar">
+        <input type="text" id="chat-input" placeholder="Type logs e.g. 'I had 3 boiled eggs and black coffee'..." />
+        <button class="chat-send-btn" id="btn-send-chat">
+          <i data-lucide="send"></i>
+        </button>
+      </div>
+    </div>
+  `;
 }
 
 function renderMacroBar(label, current, goal, unit, color) {
@@ -1159,6 +1198,10 @@ function renderMacroBar(label, current, goal, unit, color) {
   const isActive = state.selectedMacroView === macroName;
   const activeStyle = isActive ? `border: 1.5px solid ${color}; background-color: var(--surface-variant);` : '';
   
+  const initialPercent = (state.lastProgress && state.lastProgress.macros && state.lastProgress.macros[macroName] !== undefined)
+    ? state.lastProgress.macros[macroName]
+    : 0;
+
   return `
     <div class="macro-bar-container macro-clickable" data-macro="${macroName}" style="padding: 6px 8px; border-radius: 12px; cursor: pointer; transition: all 0.2s ease; ${activeStyle}">
       <div class="macro-bar-info">
@@ -1166,7 +1209,7 @@ function renderMacroBar(label, current, goal, unit, color) {
         <span class="macro-bar-value" style="font-size: 0.75rem;">${Math.round(current)}${unit} / ${goal}${unit} (${percent}%)</span>
       </div>
       <div class="macro-bar-track" style="height: 6px; background-color: var(--border);">
-        <div class="macro-bar-fill" style="width: ${percent}%; background-color: ${color}; height: 100%; border-radius: 3px;"></div>
+        <div class="macro-bar-fill" data-macro-name="${macroName}" data-target-percent="${percent}" style="width: ${initialPercent}%; background-color: ${color}; height: 100%; border-radius: 3px;"></div>
       </div>
     </div>
   `;
@@ -1174,22 +1217,18 @@ function renderMacroBar(label, current, goal, unit, color) {
 
 function renderCalendarStrip(selectedDate) {
   const today = new Date();
-  const dayMillis = 24 * 60 * 60 * 1000;
-  
-  // Find start of week (Sunday) containing selectedDate
-  const currentDayOfWeek = selectedDate.getDay();
-  const startOfWeek = new Date(selectedDate.getTime() - currentDayOfWeek * dayMillis);
-  
-  const weekDays = [];
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(startOfWeek.getTime() + i * dayMillis);
+  const weekDays = [];
+  // Generate 30 days backwards from today
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(today.getDate() - i);
     weekDays.push(d);
   }
 
   return `
-    <div class="calendar-strip">
+    <div class="calendar-strip" id="calendar-strip-container">
       ${weekDays.map(date => {
         const dateStr = getLocalDateString(date);
         const isSelected = dateStr === state.selectedDateStr;
@@ -1228,6 +1267,126 @@ function renderWeeklyScreen() {
   const formattedStart = weekDays[0].toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
   const formattedEnd = weekDays[6].toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 
+  const weekKey = `${formattedStart} — ${formattedEnd}`;
+  const insights = state.weeklyInsights[weekKey];
+
+  let insightsHtml = '';
+  if (state.isGeneratingWeeklyInsights) {
+    insightsHtml = `
+      <div class="insight-card loading" style="padding: 24px; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background-color: var(--surface); border: 1px solid var(--border); border-radius: 18px; margin-top: 24px;">
+        <div class="fact-loader" style="width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: rotate-ring 1s linear infinite;"></div>
+        <span style="font-size: 0.9rem; font-weight: 700; color: var(--primary);">AI Nutritionist Analyzing Your Week...</span>
+        <p style="font-size: 0.75rem; opacity: 0.6; max-width: 280px; margin: 0; line-height: 1.4;">Scanning foods, calorie logs, and exercise patterns to craft custom health coaching tips...</p>
+      </div>
+    `;
+  } else if (insights) {
+    if (insights.error) {
+      insightsHtml = `
+        <div class="insight-card" style="padding: 20px; background-color: var(--surface); border: 1px solid var(--border); border-radius: 18px; margin-top: 24px;">
+          <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; color: var(--error);">
+            <i data-lucide="alert-triangle" style="width: 18px; height: 18px;"></i>
+            AI Insights Failed
+          </h3>
+          <p style="font-size: 0.8rem; opacity: 0.85; margin-bottom: 12px;">${insights.error}</p>
+          <button class="btn-style primary" id="btn-regenerate-insights" data-tab="${tabIndex}" style="height: 38px; padding: 0 16px; font-size: 0.8rem; display: flex; align-items: center; gap: 6px; border: none; border-radius: 10px; cursor: pointer;">
+            <i data-lucide="rotate-cw" style="width: 14px; height: 14px;"></i> Retry AI Analysis
+          </button>
+        </div>
+      `;
+    } else {
+      insightsHtml = `
+        <div class="insight-card ${state.isWeeklyInsightsOpen ? 'open' : ''}" style="padding: 20px; background-color: var(--surface); border: 1px solid var(--border); border-radius: 18px; margin-top: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.03);">
+          <div id="btn-toggle-insights-collapse" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none;">
+            <h3 style="font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 8px; margin: 0; color: var(--primary); font-family: var(--font-display);">
+              <i data-lucide="sparkles" style="width: 18px; height: 18px; color: var(--primary);"></i>
+              AI Health Coach Insights
+            </h3>
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <button class="btn-style" id="btn-regenerate-insights" data-tab="${tabIndex}" style="height: 28px; padding: 0 10px; font-size: 0.7rem; border-radius: 8px; background: var(--surface-variant); border: 1px solid var(--border-visible); cursor: pointer; display: flex; align-items: center; gap: 4px; color: var(--on-surface-variant); font-weight: 600;">
+                <i data-lucide="rotate-cw" style="width: 10px; height: 10px;"></i> Regenerate
+              </button>
+              <i class="dropdown-arrow" data-lucide="chevron-down" style="width: 16px; height: 16px; color: var(--primary);"></i>
+            </div>
+          </div>
+
+          <div class="insight-content-wrapper">
+            <div style="border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; display: flex; flex-direction: column; gap: 14px;">
+              ${insights.good && insights.good.length > 0 ? `
+                <div>
+                  <h4 style="font-size: 0.85rem; font-weight: 700; color: var(--success); display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+                    <i data-lucide="check-circle" style="width: 14px; height: 14px;"></i> Positive Highlights
+                  </h4>
+                  <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; line-height: 1.4; opacity: 0.9;">
+                    ${insights.good.map(point => `<li style="margin-bottom: 3px;">${point}</li>`).join('')}
+                  </ul>
+                </div>
+              ` : ''}
+
+              ${insights.bad && insights.bad.length > 0 ? `
+                <div>
+                  <h4 style="font-size: 0.85rem; font-weight: 700; color: #b7791f; display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+                    <i data-lucide="alert-circle" style="width: 14px; height: 14px;"></i> Areas of Concern
+                  </h4>
+                  <ul style="margin: 0; padding-left: 18px; font-size: 0.8rem; line-height: 1.4; opacity: 0.9;">
+                    ${insights.bad.map(point => `<li style="margin-bottom: 3px;">${point}</li>`).join('')}
+                  </ul>
+                </div>
+              ` : ''}
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 4px; border-top: 1px dashed var(--border); padding-top: 12px;">
+                ${insights.focus && insights.focus.length > 0 ? `
+                  <div>
+                    <h4 style="font-size: 0.85rem; font-weight: 700; color: #3182ce; display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+                      <i data-lucide="target" style="width: 14px; height: 14px;"></i> Focus Next Week
+                    </h4>
+                    <ul style="margin: 0; padding-left: 16px; font-size: 0.78rem; line-height: 1.4; opacity: 0.9;">
+                      ${insights.focus.map(point => `<li style="margin-bottom: 3px;">${point}</li>`).join('')}
+                    </ul>
+                  </div>
+                ` : ''}
+
+                ${insights.avoid && insights.avoid.length > 0 ? `
+                  <div>
+                    <h4 style="font-size: 0.85rem; font-weight: 700; color: #e53e3e; display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+                      <i data-lucide="ban" style="width: 14px; height: 14px;"></i> What to Avoid
+                    </h4>
+                    <ul style="margin: 0; padding-left: 16px; font-size: 0.78rem; line-height: 1.4; opacity: 0.9;">
+                      ${insights.avoid.map(point => `<li style="margin-bottom: 3px;">${point}</li>`).join('')}
+                    </ul>
+                  </div>
+                ` : ''}
+              </div>
+
+              ${insights.tips && insights.tips.length > 0 ? `
+                <div style="margin-top: 4px; border-top: 1px dashed var(--border); padding-top: 12px; background-color: var(--surface-variant); padding: 10px 14px; border-radius: 10px;">
+                  <h4 style="font-size: 0.85rem; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+                    <i data-lucide="lightbulb" style="width: 14px; height: 14px; color: #e5c158;"></i> Coach Actionable Tips
+                  </h4>
+                  <ul style="margin: 0; padding-left: 18px; font-size: 0.78rem; line-height: 1.4; opacity: 0.9; color: var(--on-surface-variant);">
+                    ${insights.tips.map(point => `<li style="margin-bottom: 3px;">${point}</li>`).join('')}
+                  </ul>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+  } else {
+    insightsHtml = `
+      <div class="insight-card" style="padding: 24px; text-align: center; background-color: var(--surface); border: 1px solid var(--border); border-radius: 18px; margin-top: 24px; display: flex; flex-direction: column; align-items: center; gap: 10px;">
+        <i data-lucide="sparkles" style="width: 32px; height: 32px; color: var(--primary); opacity: 0.7;"></i>
+        <h4 style="font-size: 0.95rem; font-weight: 700; margin: 0; color: var(--on-surface);">Weekly AI Coaching Analysis</h4>
+        <p style="font-size: 0.78rem; opacity: 0.6; max-width: 290px; margin: 0; line-height: 1.4;">
+          Get tailored feedback on your calorie goals, macronutrient splits, logged workouts, and eating habits.
+        </p>
+        <button class="btn-style primary" id="btn-generate-insights" data-tab="${tabIndex}" style="height: 42px; padding: 0 20px; margin-top: 6px; font-weight: 700; display: flex; align-items: center; gap: 8px; border: none; border-radius: 10px; cursor: pointer;">
+          <i data-lucide="sparkles" style="width: 16px; height: 16px;"></i> Generate AI Report
+        </button>
+      </div>
+    `;
+  }
+
   let weeklyFoodTotal = 0;
   let weeklyExerciseTotal = 0;
   let daysTrackedCount = 0;
@@ -1253,7 +1412,7 @@ function renderWeeklyScreen() {
     };
   });
 
-  const weeklyCalorieBudget = state.dailyCalorieGoal * 7;
+  const weeklyCalorieBudget = state.dailyCalorieGoal * daysTrackedCount;
   const weeklyRemaining = weeklyCalorieBudget - weeklyFoodTotal + weeklyExerciseTotal;
   const isUnderBudget = weeklyRemaining >= 0;
 
@@ -1276,6 +1435,9 @@ function renderWeeklyScreen() {
           <span>${daysTrackedCount} out of 7 days tracked this week</span>
         </div>
       </div>
+
+      <!-- AI Weekly Insights Panel -->
+      ${insightsHtml}
 
       <!-- Calories Breakdown Table -->
       <div class="table-card">
@@ -1759,11 +1921,71 @@ function parseLocalDate(dateStr) {
 
 // ── Application Mounting & Interactivity ─────────────────────────────────────
 function mountApp() {
+  // Capture current calendar strip scroll position before re-rendering
+  const oldContainer = document.getElementById('calendar-strip-container');
+  const savedScrollLeft = oldContainer ? oldContainer.scrollLeft : null;
+
   const appRoot = document.getElementById('app');
   appRoot.innerHTML = appLayoutTemplate();
   createIcons({ icons });
   console.log("MOUNTED APP INNERHTML:", appRoot.innerHTML);
   
+  const screenBody = document.getElementById('screen-body');
+  if (screenBody) {
+    if (state.currentScreen === 'chat') {
+      screenBody.style.padding = '0';
+    } else {
+      screenBody.style.padding = '16px';
+    }
+  }
+
+  // Synchronously restore calendar strip scroll position & scroll chat to bottom to prevent blinking
+  if (state.currentScreen === 'chat') {
+    const container = document.getElementById('calendar-strip-container');
+    if (container) {
+      if (savedScrollLeft !== null) {
+        container.scrollLeft = savedScrollLeft;
+      } else {
+        container.scrollLeft = container.scrollWidth; // First load scroll to today
+      }
+    }
+
+    const scroller = document.getElementById('chat-scroller');
+    if (scroller) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+
+    // Force layout reflow before triggering transition animations
+    document.body.offsetHeight;
+
+    // 1. Animate horizontal YouTube progress bar
+    const fillBar = document.querySelector('.yt-progress-fill');
+    if (fillBar) {
+      const targetPercent = parseFloat(fillBar.dataset.targetPercent || 0);
+      fillBar.style.width = `${targetPercent}%`;
+      state.lastProgress.caloriePercent = targetPercent;
+    }
+
+    // 2. Animate circular progress ring fill
+    const fillCircle = document.querySelector('.calorie-ring-box .fill');
+    if (fillCircle) {
+      const targetOffset = parseFloat(fillCircle.dataset.targetOffset || 314.159);
+      fillCircle.style.strokeDashoffset = targetOffset;
+      state.lastProgress.offset = targetOffset;
+    }
+
+    // 3. Animate macro bars fills
+    document.querySelectorAll('.macro-bar-fill').forEach(fill => {
+      const macroName = fill.dataset.macroName;
+      const targetPercent = parseFloat(fill.dataset.targetPercent || 0);
+      fill.style.width = `${targetPercent}%`;
+      if (!state.lastProgress.macros) state.lastProgress.macros = {};
+      state.lastProgress.macros[macroName] = targetPercent;
+    });
+
+    saveStateToStorage();
+  }
+
   // Attach general event listeners
   attachEventListeners();
   
@@ -1791,7 +2013,14 @@ function attachEventListeners() {
   if (btnToggleSidebar) {
     btnToggleSidebar.addEventListener('click', () => {
       state.isSidebarOpen = !state.isSidebarOpen;
-      mountApp();
+      saveStateToStorage();
+      
+      const sidebar = document.getElementById('sidebar');
+      const backdrop = document.getElementById('sidebar-backdrop');
+      if (sidebar && backdrop) {
+        sidebar.classList.toggle('drawer-open', state.isSidebarOpen);
+        backdrop.classList.toggle('active', state.isSidebarOpen);
+      }
     });
   }
 
@@ -1883,6 +2112,7 @@ function attachEventListeners() {
         const targetCalories = Math.max(1200, tdee + calorieAdjustment);
 
         state.dailyCalorieGoal = targetCalories;
+        state.dietCalorieGoal = targetCalories;
         state.currentWeightKg = weight;
         state.targetWeightKg = parseFloat(state.onboardingData.targetWeight) || weight;
         state.heightCm = height;
@@ -1918,20 +2148,36 @@ function attachEventListeners() {
     cell.addEventListener('click', () => {
       state.selectedDateStr = cell.dataset.date;
       mountApp();
-      // Scroll to bottom of chat
-      setTimeout(() => {
-        const scroller = document.getElementById('chat-scroller');
-        if (scroller) scroller.scrollTop = scroller.scrollHeight;
-      }, 60);
     });
   });
+
+  // Toggle detailed nutrition collapsible dropdown in-place (no full app mount to avoid flashes)
+  const btnToggleNutrition = document.getElementById('btn-toggle-nutrition-dropdown');
+  if (btnToggleNutrition) {
+    btnToggleNutrition.addEventListener('click', () => {
+      state.isNutritionDropdownOpen = !state.isNutritionDropdownOpen;
+      saveStateToStorage();
+      
+      const grid = document.querySelector('.overview-grid');
+      if (grid) {
+        grid.classList.toggle('active', state.isNutritionDropdownOpen);
+      }
+      btnToggleNutrition.classList.toggle('open', state.isNutritionDropdownOpen);
+    });
+  }
 
   // Collapsible sidebar backdrop close trigger
   const sidebarBackdrop = document.getElementById('sidebar-backdrop');
   if (sidebarBackdrop) {
     sidebarBackdrop.addEventListener('click', () => {
       state.isSidebarOpen = false;
-      mountApp();
+      saveStateToStorage();
+      
+      const sidebar = document.getElementById('sidebar');
+      if (sidebar) {
+        sidebar.classList.remove('drawer-open');
+      }
+      sidebarBackdrop.classList.remove('active');
     });
   }
 
@@ -2217,6 +2463,38 @@ function attachEventListeners() {
     });
   });
 
+  const btnGenerateInsights = document.getElementById('btn-generate-insights');
+  if (btnGenerateInsights) {
+    btnGenerateInsights.addEventListener('click', () => {
+      const tabIdx = parseInt(btnGenerateInsights.dataset.tab);
+      generateWeeklyAIInsights(tabIdx);
+    });
+  }
+
+  const btnRegenerateInsights = document.getElementById('btn-regenerate-insights');
+  if (btnRegenerateInsights) {
+    btnRegenerateInsights.addEventListener('click', () => {
+      const tabIdx = parseInt(btnRegenerateInsights.dataset.tab);
+      generateWeeklyAIInsights(tabIdx);
+    });
+  }
+
+  const btnToggleInsights = document.getElementById('btn-toggle-insights-collapse');
+  if (btnToggleInsights) {
+    btnToggleInsights.addEventListener('click', (e) => {
+      if (e.target.closest('#btn-regenerate-insights')) {
+        return;
+      }
+      state.isWeeklyInsightsOpen = !state.isWeeklyInsightsOpen;
+      saveStateToStorage();
+      
+      const card = btnToggleInsights.closest('.insight-card');
+      if (card) {
+        card.classList.toggle('open', state.isWeeklyInsightsOpen);
+      }
+    });
+  }
+
   // ── Weight Screen Events ───────────────────────────────────────────────────
   document.querySelectorAll('.weight-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -2244,7 +2522,8 @@ function attachEventListeners() {
           </div>
         </div>
       `;
-      document.body.appendChild(modal);
+      const appContainer = document.getElementById('app') || document.body;
+      appContainer.appendChild(modal);
       
       // Focus input
       const input = document.getElementById('input-weight-val');
@@ -2361,7 +2640,8 @@ function attachEventListeners() {
           </div>
         </div>
       `;
-      document.body.appendChild(modal);
+      const appContainer = document.getElementById('app') || document.body;
+      appContainer.appendChild(modal);
 
       document.getElementById('btn-cancel-modal').addEventListener('click', () => modal.remove());
       document.getElementById('btn-confirm-time').addEventListener('click', () => {
@@ -2474,7 +2754,7 @@ function attachEventListeners() {
       calorieInput.addEventListener('input', (e) => {
         const val = parseInt(e.target.value);
         if (val > 0) {
-          state.dailyCalorieGoal = val;
+          state.dietCalorieGoal = val;
           saveStateToStorage();
         }
       });
@@ -2648,7 +2928,7 @@ function renderDietPlannerScreen() {
 
         <div class="form-group" style="margin-bottom: 18px;">
           <label for="diet-calories">Target Calories (kcal/day)</label>
-          <input type="number" id="diet-calories" class="input-style" value="${state.dailyCalorieGoal}" placeholder="e.g. 2000" />
+          <input type="number" id="diet-calories" class="input-style" value="${state.dietCalorieGoal}" placeholder="e.g. 2000" />
         </div>
 
         <button type="button" class="btn-style primary" id="btn-generate-diet" style="width: 100%; height: 50px; margin-top: 8px; display: flex; justify-content: center; align-items: center; gap: 8px; font-weight: 700;">
@@ -3012,7 +3292,7 @@ async function generateDailyDietPlan() {
   const dietPrompt = `
 You are a professional nutritionist. Generate a single-day meal plan:
 - Date: ${targetDateStr} (${dayName})
-- Target: ${state.dailyCalorieGoal} kcal (±100)
+- Target: ${state.dietCalorieGoal} kcal (±100)
 - Cuisine: ${state.cuisineType}
 - Style: ${state.cookingStyle}
 - Macros: ~25% Protein, ~50% Carbs, ~25% Fat
@@ -3084,6 +3364,102 @@ Return ONLY valid JSON:
     showToast(`AI generation failed: ${err.message || 'connection error'}`, 'error');
     state.generatedRecipe = { error: err.message || 'Connection or parsing error' };
     saveStateToStorage();
+  }
+}
+
+async function generateWeeklyAIInsights(tabIndex) {
+  if (!state.apiKey) {
+    showToast("Please add your Gemini API Key in Settings to generate AI insights!", "error");
+    return;
+  }
+
+  const today = new Date();
+  const currentDayOfWeek = today.getDay();
+  const startOfCurrentWeek = new Date(today.getTime() - currentDayOfWeek * 24 * 60 * 60 * 1000);
+  startOfCurrentWeek.setHours(0,0,0,0);
+  
+  const weekStart = new Date(startOfCurrentWeek.getTime() - tabIndex * 7 * 24 * 60 * 60 * 1000);
+  const weekDays = [];
+  for (let i = 0; i < 7; i++) {
+    weekDays.push(new Date(weekStart.getTime() + i * 24 * 60 * 60 * 1000));
+  }
+  
+  const formattedStart = weekDays[0].toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  const formattedEnd = weekDays[6].toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  const weekKey = `${formattedStart} — ${formattedEnd}`;
+
+  // Gather logs for each day of the week
+  let weeklyFoodTotal = 0;
+  let weeklyExerciseTotal = 0;
+  let daysTrackedCount = 0;
+
+  const weeklySummaryText = weekDays.map(date => {
+    const dStr = getLocalDateString(date);
+    const summary = getDailyNutritionSummary(dStr);
+    
+    const hasData = state.foodEntries.some(f => f.dateStr === dStr) || state.exerciseEntries.some(e => e.dateStr === dStr);
+    if (hasData) {
+      daysTrackedCount++;
+      weeklyFoodTotal += summary.totalCalories;
+      weeklyExerciseTotal += summary.exerciseCalories;
+    } else {
+      return `${dStr}: Unlogged (No entries logged)`;
+    }
+
+    const dayFoods = state.foodEntries
+      .filter(f => f.dateStr === dStr)
+      .map(f => `${f.name} (${f.servingSize || '1 serving'}, ${f.calories} kcal, P:${f.proteinG}g C:${f.carbsG}g F:${f.fatG}g)`)
+      .join(', ');
+
+    const dayExercises = state.exerciseEntries
+      .filter(e => e.dateStr === dStr)
+      .map(e => `${e.name} (${e.duration} mins, -${e.caloriesBurned} kcal)`)
+      .join(', ');
+
+    return `${dStr}: Food Calories Consumed: ${summary.totalCalories} kcal [${dayFoods || 'None'}]. Exercise Calories Burned: ${summary.exerciseCalories} kcal [${dayExercises || 'None'}]. Remaining Budget: ${state.dailyCalorieGoal - summary.totalCalories + summary.exerciseCalories} kcal.`;
+  }).join('\n');
+
+  const prompt = `
+You are a premium AI Health & Nutrition coach. Analyze the user's weekly health log and targets:
+- Profile: ${state.weightGoal} weight goal (aggression: ${state.aggression}), Target Weight: ${state.targetWeightKg} kg, Current Weight: ${state.currentWeightKg} kg
+- Demographics: Age ${state.age}, Biological Gender: ${state.isMale ? 'Male' : 'Female'}
+- Target Daily Calories: ${state.dailyCalorieGoal} kcal
+- Date Range: ${weekKey}
+- Tracked Days: ${daysTrackedCount} out of 7
+- Logged items & nutrition totals for each day:
+${weeklySummaryText}
+
+Generate a concise, beautiful health analysis report. Bullet points must be short and direct.
+Praise their positive patterns (e.g. running on Monday, meeting protein goals). Constructively identify concerns (e.g. eating too much sweets, skipping logs, high fat/sugar items, insufficient food intake). Outline what to focus on and what to avoid, and provide 2 actionable habit tips.
+
+Return ONLY a valid JSON object matching this schema:
+{"good":["Short bullet point praising positive behavior (max 15 words)"],"bad":["Short constructive point about concern/deficiency (max 15 words)"],"focus":["What specifically to focus on next week (max 15 words)"],"avoid":["Specific food, habit, or choice to avoid (max 15 words)"],"tips":["Short actionable tip (max 20 words)"]}
+`;
+
+  state.isGeneratingWeeklyInsights = true;
+  mountApp();
+
+  try {
+    const res = await callGeminiGeneric(prompt);
+    const data = await res.json();
+    const rawJsonStr = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+    console.log("Gemini Weekly Insights Raw Response:", rawJsonStr);
+    const parsed = cleanAndParseJSON(rawJsonStr);
+    
+    if (parsed && (parsed.good || parsed.bad || parsed.tips)) {
+      state.weeklyInsights[weekKey] = parsed;
+      saveStateToStorage();
+    } else {
+      throw new Error("Invalid output format from Gemini");
+    }
+  } catch (err) {
+    console.error("Failed to generate weekly insights:", err);
+    showToast(`AI analysis failed: ${err.message || 'connection error'}`, 'error');
+    state.weeklyInsights[weekKey] = { error: err.message || 'Connection or parsing error' };
+    saveStateToStorage();
+  } finally {
+    state.isGeneratingWeeklyInsights = false;
+    mountApp();
   }
 }
 
