@@ -1,6 +1,11 @@
 // ── Imports ──────────────────────────────────────────────────────────────────
 import { createIcons, icons } from 'lucide';
 import './style.css';
+import { 
+  parseInputWithOpenRouter, 
+  callOpenRouterGeneric, 
+  DEFAULT_OPENROUTER_MODELS 
+} from './openrouter.js';
 
 // ── State Management ─────────────────────────────────────────────────────────
 const state = {
@@ -46,6 +51,9 @@ const state = {
   apiKey: localStorage.getItem('geminiApiKey') || '',
   geminiModel: localStorage.getItem('geminiModel') || 'auto',
   currentLoadingFact: '',
+  apiProvider: localStorage.getItem('apiProvider') || 'gemini',
+  openRouterApiKey: localStorage.getItem('openRouterApiKey') || '',
+  openRouterModel: localStorage.getItem('openRouterModel') || 'meta-llama/llama-3.3-70b-instruct:free',
 
   // Selected Chat Date
   selectedDateStr: getLocalDateString(new Date()),
@@ -132,6 +140,9 @@ function saveStateToStorage() {
   
   localStorage.setItem('geminiApiKey', state.apiKey);
   localStorage.setItem('geminiModel', state.geminiModel);
+  localStorage.setItem('apiProvider', state.apiProvider);
+  localStorage.setItem('openRouterApiKey', state.openRouterApiKey);
+  localStorage.setItem('openRouterModel', state.openRouterModel);
   localStorage.setItem('foodEntries', JSON.stringify(state.foodEntries));
   localStorage.setItem('exerciseEntries', JSON.stringify(state.exerciseEntries));
   localStorage.setItem('weightEntries', JSON.stringify(state.weightEntries));
@@ -273,6 +284,14 @@ function getModelExecutionList(preferredModel) {
 }
 
 async function parseInputWithGemini(userText) {
+  if (state.apiProvider === 'openrouter') {
+    if (!state.openRouterApiKey) {
+      // Simulated mock parser if no API Key entered
+      return simulateMockParsing(userText);
+    }
+    return parseInputWithOpenRouter(userText, state.openRouterApiKey, state.openRouterModel, SYSTEM_PROMPT, cleanAndParseJSON);
+  }
+
   if (!state.apiKey) {
     // Simulated mock parser if no API Key entered
     return simulateMockParsing(userText);
@@ -1332,23 +1351,53 @@ function renderSettingsScreen() {
       <div class="card-content-box">
         <h3 style="font-size: 1.15rem;">AI Settings</h3>
         <p style="font-size: 0.85rem; color: var(--on-surface-variant)">
-          Provide a Gemini API Key to enable intelligent parsing of your text logs into food and exercise entries.
+          Choose your AI API provider and configure credentials to enable intelligent parsing of your text logs into food and exercise entries.
         </p>
-        <div class="form-group" style="position: relative; margin-top: 12px;">
-          <label>Gemini API Key</label>
-          <input type="password" id="settings-api-key" class="input-style" value="${state.apiKey}" placeholder="Paste your API Key here..." />
+
+        <div class="form-group" style="margin-top: 12px; margin-bottom: 8px;">
+          <label>API Provider</label>
+          <div style="display: flex; gap: 16px; margin-top: 4px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; text-transform: none; font-size: 0.9rem; font-weight: 500;">
+              <input type="radio" name="api-provider" value="gemini" ${state.apiProvider === 'gemini' ? 'checked' : ''} style="cursor: pointer;" />
+              Google Gemini
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; text-transform: none; font-size: 0.9rem; font-weight: 500;">
+              <input type="radio" name="api-provider" value="openrouter" ${state.apiProvider === 'openrouter' ? 'checked' : ''} style="cursor: pointer;" />
+              OpenRouter (Test)
+            </label>
+          </div>
         </div>
-        <div class="form-group" style="margin-top: 12px;">
-          <label>Gemini Model Preference</label>
-          <select id="settings-gemini-model" class="input-style" style="background-color: var(--surface); color: var(--on-surface); border: 1.5px solid var(--border-visible); border-radius: var(--radius-sm); padding: 8px; width: 100%;">
-            <option value="auto" ${state.geminiModel === 'auto' ? 'selected' : ''}>Auto (Best Model with Fallbacks)</option>
-            <option value="gemini-3.1-pro" ${state.geminiModel === 'gemini-3.1-pro' ? 'selected' : ''}>gemini-3.1-pro (Flagship capable)</option>
-            <option value="gemini-3.5-flash" ${state.geminiModel === 'gemini-3.5-flash' ? 'selected' : ''}>gemini-3.5-flash (Next Gen Frontier)</option>
-            <option value="gemini-2.5-pro" ${state.geminiModel === 'gemini-2.5-pro' ? 'selected' : ''}>gemini-2.5-pro (Capable reasoning)</option>
-            <option value="gemini-2.5-flash" ${state.geminiModel === 'gemini-2.5-flash' ? 'selected' : ''}>gemini-2.5-flash (Balanced standard)</option>
-            <option value="gemini-3.1-flash-lite" ${state.geminiModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>gemini-3.1-flash-lite (Ultra-light / cheapest)</option>
-          </select>
-        </div>
+
+        ${state.apiProvider === 'gemini' ? `
+          <div class="form-group" style="position: relative; margin-top: 12px;">
+            <label>Gemini API Key</label>
+            <input type="password" id="settings-api-key" class="input-style" value="${state.apiKey}" placeholder="Paste your API Key here..." />
+          </div>
+          <div class="form-group" style="margin-top: 12px;">
+            <label>Gemini Model Preference</label>
+            <select id="settings-gemini-model" class="input-style" style="background-color: var(--surface); color: var(--on-surface); border: 1.5px solid var(--border-visible); border-radius: var(--radius-sm); padding: 8px; width: 100%;">
+              <option value="auto" ${state.geminiModel === 'auto' ? 'selected' : ''}>Auto (Best Model with Fallbacks)</option>
+              <option value="gemini-3.1-pro" ${state.geminiModel === 'gemini-3.1-pro' ? 'selected' : ''}>gemini-3.1-pro (Flagship capable)</option>
+              <option value="gemini-3.5-flash" ${state.geminiModel === 'gemini-3.5-flash' ? 'selected' : ''}>gemini-3.5-flash (Next Gen Frontier)</option>
+              <option value="gemini-2.5-pro" ${state.geminiModel === 'gemini-2.5-pro' ? 'selected' : ''}>gemini-2.5-pro (Capable reasoning)</option>
+              <option value="gemini-2.5-flash" ${state.geminiModel === 'gemini-2.5-flash' ? 'selected' : ''}>gemini-2.5-flash (Balanced standard)</option>
+              <option value="gemini-3.1-flash-lite" ${state.geminiModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>gemini-3.1-flash-lite (Ultra-light / cheapest)</option>
+            </select>
+          </div>
+        ` : `
+          <div class="form-group" style="position: relative; margin-top: 12px;">
+            <label>OpenRouter API Key</label>
+            <input type="password" id="settings-openrouter-key" class="input-style" value="${state.openRouterApiKey}" placeholder="Paste your OpenRouter API Key here..." />
+          </div>
+          <div class="form-group" style="margin-top: 12px;">
+            <label>OpenRouter Model</label>
+            <select id="settings-openrouter-model" class="input-style" style="background-color: var(--surface); color: var(--on-surface); border: 1.5px solid var(--border-visible); border-radius: var(--radius-sm); padding: 8px; width: 100%;">
+              ${DEFAULT_OPENROUTER_MODELS.map(m => `
+                <option value="${m.id}" ${state.openRouterModel === m.id ? 'selected' : ''}>${m.name}</option>
+              `).join('')}
+            </select>
+          </div>
+        `}
       </div>
 
       <!-- About Card -->
@@ -1966,6 +2015,15 @@ function attachEventListeners() {
   });
 
   // ── Settings Screen Events ─────────────────────────────────────────────────
+  const apiProviders = document.getElementsByName('api-provider');
+  apiProviders.forEach(r => {
+    r.addEventListener('change', (e) => {
+      state.apiProvider = e.target.value;
+      saveStateToStorage();
+      mountApp();
+    });
+  });
+
   const settingsApiKey = document.getElementById('settings-api-key');
   if (settingsApiKey) {
     settingsApiKey.addEventListener('input', (e) => {
@@ -1982,6 +2040,24 @@ function attachEventListeners() {
       console.info("Default model updated by user:", state.geminiModel);
     });
   }
+
+  const openRouterKey = document.getElementById('settings-openrouter-key');
+  if (openRouterKey) {
+    openRouterKey.addEventListener('input', (e) => {
+      state.openRouterApiKey = e.target.value.trim();
+      saveStateToStorage();
+    });
+  }
+
+  const openRouterModelSel = document.getElementById('settings-openrouter-model');
+  if (openRouterModelSel) {
+    openRouterModelSel.addEventListener('change', (e) => {
+      state.openRouterModel = e.target.value;
+      saveStateToStorage();
+    });
+  }
+
+
 
   const btnResetOnboarding = document.getElementById('btn-reset-onboarding');
   if (btnResetOnboarding) {
@@ -2514,6 +2590,13 @@ function cleanAndParseJSON(str) {
 }
 
 async function callGeminiGeneric(prompt) {
+  if (state.apiProvider === 'openrouter') {
+    if (!state.openRouterApiKey) {
+      throw new Error("OpenRouter API Key not configured in Settings.");
+    }
+    return callOpenRouterGeneric(prompt, state.openRouterApiKey, state.openRouterModel);
+  }
+
   const modelList = getModelExecutionList(state.geminiModel);
   let lastError = null;
 
