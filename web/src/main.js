@@ -6,6 +6,7 @@ import {
   callOpenRouterGeneric, 
   DEFAULT_OPENROUTER_MODELS 
 } from './openrouter.js';
+import donateQrBase64 from './donate_qr_base64.txt?raw';
 
 // ── State Management ─────────────────────────────────────────────────────────
 const state = {
@@ -29,6 +30,10 @@ const state = {
   
   // Onboarding Wizard step
   onboardingStep: 0,
+  
+  // Guided App Tour step
+  isTourActive: JSON.parse(localStorage.getItem('isTourActive') || 'false'),
+  tourStep: JSON.parse(localStorage.getItem('tourStep') || '0'),
   onboardingData: {
     gender: 'Male',
     age: '',
@@ -46,6 +51,7 @@ const state = {
   afternoonTime: localStorage.getItem('afternoonTime') || '13:00',
   eveningEnabled: JSON.parse(localStorage.getItem('eveningEnabled') || 'true'),
   eveningTime: localStorage.getItem('eveningTime') || '19:00',
+  customReminders: JSON.parse(localStorage.getItem('customReminders') || '[]'),
 
   // Config
   apiKey: localStorage.getItem('geminiApiKey') || '',
@@ -88,7 +94,11 @@ const state = {
   lastProgress: JSON.parse(localStorage.getItem('lastProgress') || '{"caloriePercent":0,"offset":314.159,"macros":{"protein":0,"carbs":0,"fat":0}}'),
   
   // Expanded days in weekly diet planner
-  expandedPlanDays: JSON.parse(localStorage.getItem('expandedPlanDays') || '{}')
+  expandedPlanDays: JSON.parse(localStorage.getItem('expandedPlanDays') || '{}'),
+
+  // Bookmarks state
+  bookmarks: JSON.parse(localStorage.getItem('bookmarks') || '[]'),
+  showBookmarksPopup: false
 };
 
 // Ensure default weight entries exist if empty
@@ -110,8 +120,14 @@ if (state.dailyDietPlan && (state.dailyDietPlan.isMock || state.dailyDietPlan.er
   saveStateToStorage();
 }
 
+// Purge any temp/analyzing bubbles left from a crashed session or legacy failed images
+if (state.chatMessages.some(m => m.isTemp || m.content?.includes("Analyzing food image"))) {
+  state.chatMessages = state.chatMessages.filter(m => !m.isTemp && !m.content?.includes("Analyzing food image"));
+  saveStateToStorage();
+}
+
 // Auto-migrate retired models to auto
-if (state.geminiModel === 'gemini-1.5-flash' || state.geminiModel === 'gemini-2.0-flash') {
+if (['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-3.1-pro', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'].includes(state.geminiModel)) {
   state.geminiModel = 'auto';
   saveStateToStorage();
 }
@@ -121,6 +137,16 @@ function getLocalDateString(date) {
   const offset = date.getTimezoneOffset();
   const localDate = new Date(date.getTime() - offset * 60 * 1000);
   return localDate.toISOString().split('T')[0];
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function saveStateToStorage() {
@@ -170,14 +196,65 @@ function saveStateToStorage() {
   localStorage.setItem('weeklyInsights', JSON.stringify(state.weeklyInsights));
   localStorage.setItem('isWeeklyInsightsOpen', JSON.stringify(state.isWeeklyInsightsOpen));
   localStorage.setItem('lastProgress', JSON.stringify(state.lastProgress));
+  localStorage.setItem('bookmarks', JSON.stringify(state.bookmarks));
+  localStorage.setItem('isTourActive', JSON.stringify(state.isTourActive));
+  localStorage.setItem('tourStep', JSON.stringify(state.tourStep));
+  localStorage.setItem('customReminders', JSON.stringify(state.customReminders));
+}
+
+function syncAlarmsToNative() {
+  console.info("syncAlarmsToNative: checking bridge...");
+  if (typeof window.DaywiseAndroid !== 'undefined') {
+    console.info("syncAlarmsToNative: DaywiseAndroid is defined. updateAlarm exists:", !!window.DaywiseAndroid.updateAlarm);
+    if (window.DaywiseAndroid.updateAlarm) {
+      console.info("syncAlarmsToNative: syncing morning reminder...", state.morningEnabled, state.morningTime);
+      window.DaywiseAndroid.updateAlarm(
+        'morning', 
+        'Morning', 
+        state.morningEnabled, 
+        state.morningTime,
+        'Rise and shine, champion! 🌅 A new day means new gains. Open Daywise and log that delicious breakfast!'
+      );
+      console.info("syncAlarmsToNative: syncing afternoon reminder...", state.afternoonEnabled, state.afternoonTime);
+      window.DaywiseAndroid.updateAlarm(
+        'afternoon', 
+        'Afternoon', 
+        state.afternoonEnabled, 
+        state.afternoonTime,
+        'Mid-day energy check! ⚡ Did you feed your goals today? Log your lunch and keep the momentum going!'
+      );
+      console.info("syncAlarmsToNative: syncing evening reminder...", state.eveningEnabled, state.eveningTime);
+      window.DaywiseAndroid.updateAlarm(
+        'evening', 
+        'Evening', 
+        state.eveningEnabled, 
+        state.eveningTime,
+        "Sun is setting, but your progress isn't! 🌙 What did you eat for dinner? Got a workout in? Let's write it down."
+      );
+      if (state.customReminders) {
+        state.customReminders.forEach(rem => {
+          console.info("syncAlarmsToNative: syncing custom reminder...", rem.id, rem.label, rem.enabled, rem.time);
+          window.DaywiseAndroid.updateAlarm(
+            rem.id,
+            rem.label || 'Custom Reminder',
+            rem.enabled,
+            rem.time,
+            `Your goals are waiting for you! 🌟 Log your food or exercise in Daywise to keep crushing your day!`
+          );
+        });
+      }
+    }
+  } else {
+    console.warn("syncAlarmsToNative: DaywiseAndroid is undefined! (Non-Android browser or bridge not ready)");
+  }
 }
 
 function showToast(message, type = 'info') {
   const container = document.getElementById('toast-container') || (() => {
     const c = document.createElement('div');
     c.id = 'toast-container';
-    c.style.cssText = 'position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); z-index: 10000; display: flex; flex-direction: column; gap: 8px; width: 90%; max-width: 360px; pointer-events: none;';
-    const appWrapper = document.getElementById('screen-body') || document.body;
+    c.style.cssText = 'position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); z-index: 10000; display: flex; flex-direction: column; gap: 8px; width: 90%; max-width: 320px; pointer-events: none;';
+    const appWrapper = document.body;
     appWrapper.appendChild(c);
     return c;
   })();
@@ -195,7 +272,7 @@ function showToast(message, type = 'info') {
     align-items: center;
     gap: 8px;
     background-color: ${type === 'error' ? 'var(--error)' : type === 'success' ? 'var(--success)' : 'var(--primary)'};
-    animation: slideUp 0.3s ease forwards;
+    animation: toastSlideUp 0.3s ease forwards;
     pointer-events: auto;
   `;
   
@@ -205,7 +282,7 @@ function showToast(message, type = 'info') {
   container.appendChild(toast);
   
   setTimeout(() => {
-    toast.style.animation = 'slideDown 0.3s ease forwards';
+    toast.style.animation = 'toastSlideDown 0.3s ease forwards';
     setTimeout(() => toast.remove(), 300);
   }, 4000);
 }
@@ -234,20 +311,47 @@ Rules:
 - Do NOT output empty items arrays. If no food or exercise is found, you MUST return the 'unknown' JSON type instead.
 `;
 
-async function callGeminiAPI(model, userText) {
-  return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${state.apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: `${SYSTEM_PROMPT}\n\nUser input: ${userText}` }] }],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 1024,
-        responseMimeType: "application/json"
+async function callGeminiAPI(model, userText, imageFileObj = null) {
+  const parts = [];
+  if (imageFileObj && imageFileObj.data) {
+    parts.push({
+      inlineData: {
+        mimeType: imageFileObj.mimeType,
+        data: imageFileObj.data
       }
-    })
-  });
+    });
+  }
+  parts.push({ text: `${SYSTEM_PROMPT}\n\nUser input: ${userText}` });
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s hard timeout
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${state.apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: parts }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1024,
+          responseMimeType: "application/json"
+        }
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return res;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      // Construct a fake Response so caller's error handling works uniformly
+      return new Response(JSON.stringify({ error: { message: 'Request timed out after 30 seconds. Check your network and try again.' } }), { status: 408 });
+    }
+    throw err;
+  }
 }
+
 
 async function handleApiError(response) {
   let detail = `HTTP ${response.status}`;
@@ -257,56 +361,94 @@ async function handleApiError(response) {
       detail = errJson.error.message;
     }
   } catch (e) {}
+
+  const lowerDetail = detail.toLowerCase();
+  if (lowerDetail.includes('quota') || lowerDetail.includes('limit') || lowerDetail.includes('exhausted') || response.status === 429) {
+    let firstSentence = detail;
+    const sentences = detail.split(/(?<=[.!?])\s+/);
+    if (sentences && sentences.length > 0) {
+      let candidate = sentences[0].trim();
+      if ((candidate.toLowerCase().endsWith('e.g') || candidate.toLowerCase().endsWith('i.e')) && sentences.length > 1) {
+        candidate = candidate + ". " + sentences[1].trim();
+      }
+      firstSentence = candidate;
+    }
+    if (firstSentence.endsWith('.')) {
+      firstSentence = firstSentence.slice(0, -1);
+    }
+    detail = `${firstSentence}. Please try entering your food log again now or after sometime.`;
+  }
   return detail;
 }
 
 function getModelExecutionList(preferredModel) {
-  // Available models ordered from cheapest (least tokens/cost) to most capable/expensive
+  // Only real, verified Gemini models — ordered cheapest to most capable
   const cheapestToHighest = [
-    'gemini-3.1-flash-lite',
+    'gemini-2.0-flash',
     'gemini-2.5-flash',
-    'gemini-3.5-flash',
-    'gemini-2.5-pro',
-    'gemini-3.1-pro'
+    'gemini-2.5-pro'
   ];
 
-  const bestModel = 'gemini-3.1-pro';
+  const bestModel = 'gemini-2.5-flash'; // Best balance of speed + multimodal capability
   const list = [];
 
   if (!preferredModel || preferredModel === 'auto') {
-    // 1. By default the app must access the best model
     list.push(bestModel);
-    // 2. If not, then app must access cheapest, then higher and so on
-    cheapestToHighest.forEach(m => {
-      if (m !== bestModel) {
-        list.push(m);
-      }
-    });
+    cheapestToHighest.forEach(m => { if (m !== bestModel) list.push(m); });
   } else {
-    // 3. User selected a model -> try it with priority
     list.push(preferredModel);
-    // If not available, then app must access cheapest, then higher and so on
-    cheapestToHighest.forEach(m => {
-      if (m !== preferredModel) {
-        list.push(m);
-      }
-    });
+    cheapestToHighest.forEach(m => { if (m !== preferredModel) list.push(m); });
   }
   return list;
 }
 
-async function parseInputWithGemini(userText) {
+async function parseInputWithGemini(userText, imageFileObj = null) {
+  // Direct OpenRouter routing
   if (state.apiProvider === 'openrouter') {
     if (!state.openRouterApiKey) {
-      // Simulated mock parser if no API Key entered
-      return simulateMockParsing(userText);
+      return simulateMockParsing(userText, imageFileObj);
     }
-    return parseInputWithOpenRouter(userText, state.openRouterApiKey, state.openRouterModel, SYSTEM_PROMPT, cleanAndParseJSON);
+    return parseInputWithOpenRouter(userText, state.openRouterApiKey, state.openRouterModel, SYSTEM_PROMPT, cleanAndParseJSON, imageFileObj);
+  }
+
+  // Direct, real image analysis path (for Gemini)
+  if (imageFileObj) {
+    if (!state.apiKey) {
+      return { type: "error", message: "Gemini API Key is missing. Please enter your Gemini API Key in the settings menu to enable food image analysis." };
+    }
+
+    const modelList = getModelExecutionList(state.geminiModel);
+    let lastError = null;
+
+    for (const model of modelList) {
+      try {
+        console.info(`Attempting chatbot image parsing with model: ${model}`);
+        const response = await callGeminiAPI(model, userText, imageFileObj);
+        
+        if (response.ok) {
+          const data = await response.json();
+          const rawJsonStr = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+          const parsed = cleanAndParseJSON(rawJsonStr);
+          parsed.modelUsed = model;
+          console.info(`Model ${model} chatbot image parsing succeeded!`);
+          return parsed;
+        } else {
+          const errorMsg = await handleApiError(response);
+          console.warn(`Model ${model} chatbot image parsing failed: ${errorMsg}`);
+          lastError = new Error(`Model ${model}: ${errorMsg}`);
+        }
+      } catch (err) {
+        console.warn(`Model ${model} chatbot image parsing caught error: ${err.message}`);
+        lastError = err;
+      }
+    }
+
+    console.error("All Gemini models failed chatbot image parsing:", lastError);
+    return { type: "error", message: lastError ? lastError.message : "AI image analysis connection failed" };
   }
 
   if (!state.apiKey) {
-    // Simulated mock parser if no API Key entered
-    return simulateMockParsing(userText);
+    return simulateMockParsing(userText, null);
   }
 
   const modelList = getModelExecutionList(state.geminiModel);
@@ -315,7 +457,7 @@ async function parseInputWithGemini(userText) {
   for (const model of modelList) {
     try {
       console.info(`Attempting chatbot input parsing with model: ${model}`);
-      const response = await callGeminiAPI(model, userText);
+      const response = await callGeminiAPI(model, userText, null);
       
       if (response.ok) {
         const data = await response.json();
@@ -339,7 +481,7 @@ async function parseInputWithGemini(userText) {
   return { type: "error", message: lastError ? lastError.message : "AI connection failed" };
 }
 
-function simulateMockParsing(text) {
+function simulateMockParsing(text, imageFileObj = null) {
   const lower = text.toLowerCase();
   // Extract number if present
   const countMatch = text.match(/\d+/);
@@ -653,6 +795,9 @@ function appLayoutTemplate() {
     <div id="magnified-modal" class="magnified-modal-overlay ${state.editingMessageId ? 'active' : ''}">
       ${state.editingMessageId ? renderMagnifiedModalContent() : ''}
     </div>
+
+    <!-- Guided App Tour Overlay -->
+    ${state.isTourActive ? tourOverlayTemplate() : ''}
   `;
 }
 
@@ -688,7 +833,7 @@ function renderScreenContent() {
 function onboardingOverlayTemplate() {
   const step = state.onboardingStep;
   const data = state.onboardingData;
-  const progressPercent = (step / 5) * 100;
+  const progressPercent = (step / 7) * 100;
 
   // Mifflin-St Jeor Calculation BMR & target calories
   const weight = parseFloat(data.weight) || 0;
@@ -748,17 +893,17 @@ function onboardingOverlayTemplate() {
 
             <div class="form-group">
               <label>Age (years)</label>
-              <input type="number" id="ob-age" class="input-style" placeholder="e.g. 25" value="${data.age}" />
+              <input type="number" id="ob-age" class="input-style" placeholder="e.g. 25" value="${data.age}" min="12" max="100" />
             </div>
 
             <div class="form-row">
               <div class="form-group">
                 <label>Height (cm)</label>
-                <input type="number" id="ob-height" class="input-style" placeholder="e.g. 175" value="${data.height}" />
+                <input type="number" id="ob-height" class="input-style" placeholder="e.g. 175" value="${data.height}" min="100" max="250" />
               </div>
               <div class="form-group">
                 <label>Current Weight (kg)</label>
-                <input type="number" id="ob-weight" class="input-style" placeholder="e.g. 78" value="${data.weight}" />
+                <input type="number" id="ob-weight" class="input-style" placeholder="e.g. 78" value="${data.weight}" min="30" max="250" />
               </div>
             </div>
           </div>
@@ -815,7 +960,7 @@ function onboardingOverlayTemplate() {
 
             <div class="form-group">
               <label>Target weight (kg)</label>
-              <input type="number" id="ob-target" class="input-style" placeholder="e.g. 70" value="${data.targetWeight}" />
+              <input type="number" id="ob-target" class="input-style" placeholder="e.g. 70" value="${data.targetWeight}" min="30" max="250" />
             </div>
           </div>
         ` : ''}
@@ -843,13 +988,214 @@ function onboardingOverlayTemplate() {
           </div>
         ` : ''}
 
+        ${step === 6 ? `
+          <div class="onboarding-step disclaimer-step-container animate-disclaimer-enter">
+            <div class="disclaimer-header">
+              <div class="disclaimer-icon-pulse">
+                <i data-lucide="shield-alert"></i>
+              </div>
+              <h3>Important Disclaimer</h3>
+            </div>
+            
+            <p class="disclaimer-subtitle">Please read before proceeding</p>
+
+            <div class="disclaimer-content-box">
+              <div class="disclaimer-item">
+                <div class="disclaimer-item-bullet orange">
+                  <i data-lucide="info"></i>
+                </div>
+                <div class="disclaimer-item-text">
+                  <strong>AI Estimation</strong>
+                  <span>All nutrition metrics (calories, macros) are AI estimates. Do not use for clinical or medical decisions.</span>
+                </div>
+              </div>
+
+              <div class="disclaimer-item">
+                <div class="disclaimer-item-bullet amber">
+                  <i data-lucide="zap-off"></i>
+                </div>
+                <div class="disclaimer-item-text">
+                  <strong>Free API Quota Limits</strong>
+                  <span>This app runs on a free Gemini API tier by default. High traffic can exceed Google's quota limits, which may temporarily prevent food logging.</span>
+                </div>
+              </div>
+
+              <div class="disclaimer-item">
+                <div class="disclaimer-item-bullet primary">
+                  <i data-lucide="sparkles"></i>
+                </div>
+                <div class="disclaimer-item-text">
+                  <strong>Paid Upgrade (Coming Soon)</strong>
+                  <span>A future paid upgrade will include a built-in pre-authenticated API, letting you skip API key generation completely for a seamless, hassle-free experience!</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${step === 7 ? `
+          <div class="onboarding-step api-setup-step-container">
+            <h3>Configure Gemini API Key</h3>
+            <p style="font-size: 0.85rem; color: var(--on-surface-variant)">Enter your Google Gemini API key to enable AI-powered food and exercise recognition.</p>
+
+            <div class="form-group" style="margin-top: 4px;">
+              <label>Google Gemini API Key</label>
+              <div class="api-key-input-wrapper">
+                <input type="password" id="ob-gemini-key" class="input-style" placeholder="Paste your AI Studio API Key..." value="${state.apiKey || ''}" />
+                <button type="button" id="ob-toggle-key-visibility" class="btn-toggle-key">
+                  <i data-lucide="eye"></i>
+                </button>
+              </div>
+              <a href="https://aistudio.google.com/" target="_blank" class="btn-style secondary" style="margin-top: 6px; gap: 8px; border: 1px solid var(--border-visible); background-color: var(--surface-variant); height: 38px; font-size: 0.8rem; text-decoration: none;">
+                <i data-lucide="external-link" style="width: 14px; height: 14px;"></i>
+                Get Free API Key from Gemini AI Studio
+              </a>
+            </div>
+
+            <div class="video-tutorial-section">
+              <span class="section-label">How to get an API Key?</span>
+              <div class="video-placeholder-card" id="btn-tutorial-video">
+                <div class="video-thumbnail-overlay">
+                  <div class="play-btn-circle">
+                    <i data-lucide="play" class="play-icon" style="width: 16px; height: 16px;"></i>
+                  </div>
+                  <div class="video-duration">1:15</div>
+                </div>
+                <div class="video-card-info">
+                  <span class="video-title">Get Gemini API Key in 60 Seconds</span>
+                  <span class="video-subtitle">Tap to watch video tutorial & get key</span>
+                </div>
+              </div>
+            </div>
+            
+            <p class="skip-key-info">You can leave this blank to run in offline simulation mode. You can edit/update this key anytime in the app Settings.</p>
+          </div>
+        ` : ''}
+
         <div class="onboarding-nav">
-          ${step > 0 ? `
+          ${step === 7 ? `
+            <button class="btn-style secondary" id="btn-ob-skip-key" style="white-space: nowrap; font-size: 0.8rem; padding: 0 12px;">Continue without key</button>
+          ` : step > 0 ? `
             <button class="btn-style secondary" id="btn-ob-prev">Back</button>
           ` : ''}
           <button class="btn-style primary" id="btn-ob-next">
-            ${step === 0 ? 'Get Started' : step === 5 ? 'Start Tracking' : 'Continue'}
+            ${step === 0 ? 'Get Started' : step === 7 ? 'Start Tracking' : 'Continue'}
           </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+// ── App Guided Tour Screen ──────────────────────────────────────────────────
+function simulateOnboardingTestLog() {
+  const timestamp = Date.now();
+  const dateStr = getLocalDateString(new Date());
+  const msgId = 'tour-test-msg-' + timestamp;
+  
+  // Create assistant message
+  state.chatMessages.push({
+    id: msgId,
+    timestamp,
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    isUser: false,
+    messageType: 'food',
+    content: 'Logged 2 Boiled Eggs.',
+    rawQuery: 'I had 2 boiled eggs for breakfast',
+    modelUsed: 'mock-parser',
+    isIncomingCard: true
+  });
+  
+  // Add food entries
+  state.foodEntries.push({
+    id: 'tour-food-' + timestamp,
+    messageId: msgId,
+    timestamp,
+    dateStr,
+    name: 'Boiled Eggs',
+    calories: 155,
+    proteinG: 13,
+    carbsG: 1.1,
+    fatG: 11,
+    servingSize: '2 eggs'
+  });
+  
+  saveStateToStorage();
+}
+
+function tourOverlayTemplate() {
+  const step = state.tourStep;
+  
+  // Decide tooltip position based on step
+  let positionStyle = 'bottom: 110px; left: 0; right: 0; margin: 0 auto;'; 
+  if (step === 2) {
+    positionStyle = 'top: 220px; left: 0; right: 0; margin: 0 auto;'; 
+  } else if (step === 3) {
+    positionStyle = 'bottom: 110px; left: 20px; right: auto; margin: 0;'; 
+  } else if (step === 4) {
+    positionStyle = 'top: 70px; left: 20px; right: auto; margin: 0;'; 
+  } else if (step === 5) {
+    positionStyle = 'top: 50%; left: 0; right: 0; margin: 0 auto; transform: translateY(-50%);'; 
+  }
+
+  let stepTitle = '';
+  let stepText = '';
+  let actionHtml = '';
+
+  if (step === 1) {
+    stepTitle = 'Step 1: Chat-based Logging ✍️';
+    stepText = `Daywise makes logging food and exercises easy! Simply type what you ate or your workout in the chat bar below. <br/><br/>
+                Try typing: <strong style="color: var(--primary);">"I had 2 boiled eggs for breakfast"</strong> or click the Quick Fill button below to simulate it!`;
+    actionHtml = `<button class="btn-style secondary" id="btn-tour-fill" style="height: 36px; padding: 0 12px; font-size: 0.8rem; border: 1.5px solid var(--border-visible);">⚡ Quick Fill & Log</button>`;
+  } else if (step === 2) {
+    stepTitle = 'Step 2: Log Card Actions 🎯';
+    stepText = `Excellent! Your food log card has been created. <br/><br/>
+                Tap the <strong>Bookmark icon</strong> to save this meal for quick logging next time. You can also tap the <strong>Edit pen icon</strong> to change details, or the <strong>Trash icon</strong> to delete logs.`;
+  } else if (step === 3) {
+    stepTitle = 'Step 3: Visual Food Photos 📸';
+    stepText = `You can also log using photos! Tap the <strong>Image icon</strong> below to upload pictures of your food or workout log sheet for instant AI recognition.`;
+  } else if (step === 4) {
+    stepTitle = 'Step 4: Expand the Sidebar Menu 🍔';
+    stepText = `Let's explore other premium features. Tap the <strong>Hamburger Menu icon</strong> at the top-left to expand the sidebar navigation.`;
+  } else if (step === 5) {
+    stepTitle = 'Step 5: Explore All Features! 🚀';
+    stepText = `Here is your complete wellness dashboard:
+                <ul style="margin: 8px 0 0 16px; padding: 0; text-align: left; font-size: 0.78rem; display: flex; flex-direction: column; gap: 6px;">
+                  <li><strong>AI Daily Diet Planner</strong>: Generates customized meal plans matching your calorie goals.</li>
+                  <li><strong>AI Chef Recipes</strong>: Cooks recipe ideas on-demand from ingredients in your pantry.</li>
+                  <li><strong>Weekly Summary</strong>: Tracks your calorie and macro-nutrient target splits history.</li>
+                  <li><strong>Weight Tracker</strong>: Charts weight progress lines against your target weights.</li>
+                  <li><strong>Daily Goals & Reminders</strong>: Adjust target budgets and scheduling notifications.</li>
+                </ul>`;
+  }
+
+  return `
+    <div class="tour-backdrop-shield"></div>
+    <div class="tour-tooltip-positioner" style="${positionStyle}">
+      <div class="tour-tooltip-card">
+        <div class="tour-tooltip-header">
+          <h4>${stepTitle}</h4>
+          <button id="btn-tour-skip" class="btn-tour-close" title="Skip Tour">&times;</button>
+        </div>
+        <div class="tour-tooltip-body">
+          <p>${stepText}</p>
+          ${actionHtml ? `<div class="tour-action-row" style="margin-top: 10px; display: flex; justify-content: center;">${actionHtml}</div>` : ''}
+        </div>
+        <div class="tour-tooltip-footer">
+          <div class="tour-dots">
+            ${[1, 2, 3, 4, 5].map(s => `
+              <span class="tour-dot ${step === s ? 'active' : ''}"></span>
+            `).join('')}
+          </div>
+          <div class="tour-nav-btns" style="display: flex; gap: 6px;">
+            ${step > 1 ? `
+              <button class="btn-style secondary" id="btn-tour-prev" style="height: 32px; padding: 0 10px; font-size: 0.75rem;">Back</button>
+            ` : ''}
+            <button class="btn-style primary" id="btn-tour-next" style="height: 32px; padding: 0 12px; font-size: 0.75rem;">
+              ${step === 5 ? 'Finish Tour' : 'Next'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -974,12 +1320,13 @@ function renderChatScreen() {
         ${activeMessages.length === 0 ? `
           <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: 0.5; text-align: center; gap: 8px;">
             <i data-lucide="message-square" style="width: 48px; height: 48px;"></i>
-            <p>No tracking logs for today. Just talk to the board to log breakfasts, dinners, or runs!</p>
+            <p>No tracking logs. Just talk to the board to log breakfasts, dinners, or runs!</p>
           </div>
         ` : activeMessages.map(m => {
             if (m.isUser) {
+              const tempClass = m.isTemp ? 'temp' : '';
               return `
-                <div class="chat-bubble-row user">
+                <div class="chat-bubble-row user ${tempClass}" data-is-user="true" data-msg-id="${m.id}">
                   <div class="chat-bubble">
                     <div>${m.content}</div>
                     <div class="chat-bubble-time">${m.time}</div>
@@ -988,7 +1335,7 @@ function renderChatScreen() {
               `;
             }
             
-            // Assistant bubble with food log table
+            // Assistant bubble with premium food card layout
             if (m.messageType === 'food') {
               const msgFoods = state.foodEntries.filter(f => f.messageId === m.id);
               if (msgFoods.length === 0) return ''; // Deleted -> disappear!
@@ -998,129 +1345,169 @@ function renderChatScreen() {
               let totalCarbs = 0;
               let totalFat = 0;
               
-              const tableRows = msgFoods.map(f => {
+              const itemsHtml = msgFoods.map(f => {
                 totalCalories += f.calories;
                 totalProtein += f.proteinG;
                 totalCarbs += f.carbsG;
                 totalFat += f.fatG;
                 return `
-                  <tr>
-                    <td style="font-weight: 500;">${f.name}</td>
-                    <td style="text-align: right; font-style: italic; opacity: 0.85;">${f.servingSize || '—'}</td>
-                    <td style="text-align: right;">${f.calories}</td>
-                    <td style="text-align: right;">${f.proteinG}g</td>
-                    <td style="text-align: right;">${f.carbsG}g</td>
-                    <td style="text-align: right;">${f.fatG}g</td>
-                  </tr>
+                  <div class="log-item-row">
+                    <span class="log-item-name">${f.name} ${f.servingSize ? `(${f.servingSize})` : ''}</span>
+                    <div class="log-item-badges">
+                      <span class="log-badge">Calories: ${f.calories}</span>
+                      <span class="log-badge">Carbs: ${f.carbsG}g</span>
+                      <span class="log-badge">Protein: ${f.proteinG}g</span>
+                      <span class="log-badge">Fat: ${f.fatG}g</span>
+                    </div>
+                  </div>
                 `;
               }).join('');
               
-              const loggedNames = msgFoods.map(f => f.name).join(', ');
+              const caloriePct = state.dailyCalorieGoal > 0 ? Math.min(100, Math.round((totalCalories / state.dailyCalorieGoal) * 100)) : 0;
+              const carbsPct = carbsGoalG > 0 ? Math.min(100, Math.round((totalCarbs / carbsGoalG) * 100)) : 0;
+              const proteinPct = proteinGoalG > 0 ? Math.min(100, Math.round((totalProtein / proteinGoalG) * 100)) : 0;
+              const fatPct = fatGoalG > 0 ? Math.min(100, Math.round((totalFat / fatGoalG) * 100)) : 0;
+
+              const isIncoming = m.isIncomingCard ? 'incoming' : '';
+              m.isIncomingCard = false; // Reset so it doesn't animate on every screen redraw
+
+              const rawQueryText = m.rawQuery || msgFoods.map(f => f.name).join(', ');
+              const isBookmarked = state.bookmarks.some(b => b.query.toLowerCase() === rawQueryText.toLowerCase());
               
               return `
-                <div class="chat-bubble-row assistant">
-                  <div class="chat-bubble has-table" style="position: relative; padding-right: 48px;">
-                    <div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding-right: 8px;">
-                      <i data-lucide="check-circle-2" style="width: 16px; height: 16px; color: var(--success); flex-shrink: 0;"></i>
-                      Logged: ${loggedNames}
+                <div class="log-card food ${isIncoming}" data-msg-id="${m.id}">
+                  <div class="log-card-header">${escapeHtml(rawQueryText)}</div>
+                  <div class="log-card-body">
+                    ${itemsHtml}
+                  </div>
+                  <div class="log-card-divider"></div>
+                  <div class="log-summary-row">
+                    <div class="log-summary-col">
+                      <span class="log-summary-label">Calories</span>
+                      <span class="log-summary-value">${totalCalories}</span>
+                      <div class="log-summary-bar-track">
+                        <div class="log-summary-bar-fill" style="width: ${caloriePct}%; background-color: var(--color-calories);"></div>
+                      </div>
+                      <span class="log-summary-pct">${caloriePct}%</span>
                     </div>
-                    <button class="btn-edit-nutrients" data-id="${m.id}" data-type="food" title="Edit logged nutrients" style="position: absolute; top: 12px; right: 12px; background: var(--surface); border: 1.5px solid var(--border-visible); border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--primary); box-shadow: var(--shadow); z-index: 10;">
-                      <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
-                    </button>
-                    <div class="chat-table-wrapper" style="margin-top: 6px;">
-                      <table class="chat-table">
-                        <thead>
-                          <tr>
-                            <th style="font-weight: 700;">Item</th>
-                            <th style="text-align: right; font-weight: 700;">Qty</th>
-                            <th style="text-align: right; font-weight: 700;">kcal</th>
-                            <th style="text-align: right; font-weight: 700;">P</th>
-                            <th style="text-align: right; font-weight: 700;">C</th>
-                            <th style="text-align: right; font-weight: 700;">F</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${tableRows}
-                          <tr style="font-weight: 700; border-top: 1.5px solid var(--border);">
-                            <td>Total</td>
-                            <td style="text-align: right;">—</td>
-                            <td style="text-align: right; color: var(--primary);">${totalCalories}</td>
-                            <td style="text-align: right;">${totalProtein}g</td>
-                            <td style="text-align: right;">${totalCarbs}g</td>
-                            <td style="text-align: right;">${totalFat}g</td>
-                          </tr>
-                        </tbody>
-                      </table>
+                    <div class="log-summary-col">
+                      <span class="log-summary-label">Carbs</span>
+                      <span class="log-summary-value">${totalCarbs}g</span>
+                      <div class="log-summary-bar-track">
+                        <div class="log-summary-bar-fill" style="width: ${carbsPct}%; background-color: var(--color-carbs);"></div>
+                      </div>
+                      <span class="log-summary-pct">${carbsPct}%</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 0.65rem; opacity: 0.6;">
-                      <span style="font-style: italic;">Model: ${m.modelUsed || 'Llama 3.3 70B'}</span>
-                      <span class="chat-bubble-time" style="margin: 0; font-size: 0.65rem;">${m.time}</span>
+                    <div class="log-summary-col">
+                      <span class="log-summary-label">Protein</span>
+                      <span class="log-summary-value">${totalProtein}g</span>
+                      <div class="log-summary-bar-track">
+                        <div class="log-summary-bar-fill" style="width: ${proteinPct}%; background-color: var(--color-protein);"></div>
+                      </div>
+                      <span class="log-summary-pct">${proteinPct}%</span>
+                    </div>
+                    <div class="log-summary-col">
+                      <span class="log-summary-label">Fat</span>
+                      <span class="log-summary-value">${totalFat}g</span>
+                      <div class="log-summary-bar-track">
+                        <div class="log-summary-bar-fill" style="width: ${fatPct}%; background-color: var(--color-fat);"></div>
+                      </div>
+                      <span class="log-summary-pct">${fatPct}%</span>
                     </div>
                   </div>
+                  <div class="log-card-footer">
+                    <span class="log-card-time">
+                      ${m.time}
+                      ${m.modelUsed ? `<span style="font-size: 0.72rem; opacity: 0.6; margin-left: 6px; font-weight: normal;">• <i style="font-style: italic;">${m.modelUsed}</i></span>` : ''}
+                    </span>
+                    <div class="log-card-actions">
+                      <button class="log-action-btn btn-toggle-bookmark-log ${isBookmarked ? 'is-bookmarked' : ''}" 
+                        data-query="${escapeHtml(rawQueryText)}"
+                        data-items="${escapeHtml(JSON.stringify(msgFoods.map(f => ({name: f.name, calories: f.calories, proteinG: f.proteinG, carbsG: f.carbsG, fatG: f.fatG, servingSize: f.servingSize || ''}))))}"
+                        title="Save to bookmarks">
+                        <i data-lucide="bookmark" style="width: 14px; height: 14px;"></i>
+                      </button>
+                      <button class="log-action-btn btn-edit-nutrients" data-id="${m.id}" data-type="food" title="Edit logged nutrients">
+                        <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
+                      </button>
+                      <button class="log-action-btn btn-delete-log-group" data-id="${m.id}" data-type="food" title="Delete logged food">
+                        <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+                      </button>
+                    </div>
+                  </div>
+                  ${m.modelUsed === 'mock-parser' ? `
+                    <div class="mock-warning-box">
+                      <i data-lucide="alert-triangle"></i>
+                      <div>These are mock values, you must edit them according to the nutritional value of the food. For accurate measurements, copy-paste your API key in the settings page (Menu &gt; Settings).</div>
+                    </div>
+                  ` : ''}
                 </div>
               `;
             }
             
-            // Assistant bubble with exercise log table
+            // Assistant bubble with premium exercise card layout
             if (m.messageType === 'exercise') {
               const msgExercises = state.exerciseEntries.filter(e => e.messageId === m.id);
               if (msgExercises.length === 0) return ''; // Deleted -> disappear!
               
               let totalBurned = 0;
-              const tableRows = msgExercises.map(e => {
+              const itemsHtml = msgExercises.map(e => {
                 totalBurned += e.caloriesBurned;
                 return `
-                  <tr>
-                    <td style="font-weight: 500;">${e.name}</td>
-                    <td style="text-align: right;">${e.duration} mins</td>
-                    <td style="text-align: right; color: var(--color-exercise); font-weight: 700;">-${e.caloriesBurned} kcal</td>
-                  </tr>
+                  <div class="log-item-row">
+                    <span class="log-item-name">${e.name}</span>
+                    <div class="log-item-badges">
+                      <span class="log-badge">Duration: ${e.duration} mins</span>
+                      <span class="log-badge" style="color: var(--color-exercise); font-weight: 700;">Burn: -${e.caloriesBurned} kcal</span>
+                    </div>
+                  </div>
                 `;
               }).join('');
               
-              const loggedNames = msgExercises.map(e => e.name).join(', ');
-              
+              const isIncoming = m.isIncomingCard ? 'incoming' : '';
+              m.isIncomingCard = false;
+
               return `
-                <div class="chat-bubble-row assistant">
-                  <div class="chat-bubble has-table" style="position: relative; padding-right: 48px;">
-                    <div style="font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; margin-bottom: 8px; padding-right: 8px;">
-                      <i data-lucide="check-circle-2" style="width: 16px; height: 16px; color: var(--color-exercise); flex-shrink: 0;"></i>
-                      Logged: ${loggedNames}
-                    </div>
-                    <button class="btn-edit-nutrients" data-id="${m.id}" data-type="exercise" title="Edit logged exercise" style="position: absolute; top: 12px; right: 12px; background: var(--surface); border: 1.5px solid var(--border-visible); border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--primary); box-shadow: var(--shadow); z-index: 10;">
-                      <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
-                    </button>
-                    <div class="chat-table-wrapper" style="margin-top: 6px;">
-                      <table class="chat-table">
-                        <thead>
-                          <tr>
-                            <th style="font-weight: 700;">Workout</th>
-                            <th style="text-align: right; font-weight: 700;">Min</th>
-                            <th style="text-align: right; font-weight: 700;">Burn</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${tableRows}
-                          <tr style="font-weight: 700; border-top: 1.5px solid var(--border);">
-                            <td>Total Burned</td>
-                            <td style="text-align: right;">—</td>
-                            <td style="text-align: right; color: var(--color-exercise); font-weight: 700;">-${totalBurned} kcal</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 0.65rem; opacity: 0.6;">
-                      <span style="font-style: italic;">Model: ${m.modelUsed || 'Llama 3.3 70B'}</span>
-                      <span class="chat-bubble-time" style="margin: 0; font-size: 0.65rem;">${m.time}</span>
+                <div class="log-card exercise ${isIncoming}" data-msg-id="${m.id}">
+                  <div class="log-card-header">${escapeHtml(m.rawQuery || msgExercises.map(e => e.name).join(', '))}</div>
+                  <div class="log-card-body">
+                    ${itemsHtml}
+                  </div>
+                  <div class="log-card-divider"></div>
+                  <div class="log-summary-row" style="grid-template-columns: 1fr;">
+                    <div class="log-summary-col" style="align-items: center;">
+                      <span class="log-summary-label">Total Calories Burned</span>
+                      <span class="log-summary-value" style="color: var(--color-exercise); font-size: 1.15rem; font-weight: 800;">-${totalBurned} kcal</span>
                     </div>
                   </div>
+                  <div class="log-card-footer">
+                    <span class="log-card-time">
+                      ${m.time}
+                      ${m.modelUsed ? `<span style="font-size: 0.72rem; opacity: 0.6; margin-left: 6px; font-weight: normal;">• <i style="font-style: italic;">${m.modelUsed}</i></span>` : ''}
+                    </span>
+                    <div class="log-card-actions">
+                      <button class="log-action-btn btn-edit-nutrients" data-id="${m.id}" data-type="exercise" title="Edit logged exercise">
+                        <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
+                      </button>
+                      <button class="log-action-btn btn-delete-log-group" data-id="${m.id}" data-type="exercise" title="Delete logged exercise">
+                        <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+                      </button>
+                    </div>
+                  </div>
+                  ${m.modelUsed === 'mock-parser' ? `
+                    <div class="mock-warning-box">
+                      <i data-lucide="alert-triangle"></i>
+                      <div>These are mock values, you must edit them according to the nutritional value of the exercise. For accurate measurements, copy-paste your API key in the settings page (Menu &gt; Settings).</div>
+                    </div>
+                  ` : ''}
                 </div>
               `;
             }
             
             // Standard assistant text bubble
+            const isError = (m.messageType === 'unknown' || m.messageType === 'error') ? 'error-msg-bubble' : '';
             return `
-              <div class="chat-bubble-row assistant">
+              <div class="chat-bubble-row assistant ${isError} ${m.isTemp ? 'temp' : ''}" data-msg-id="${m.id}">
                 <div class="chat-bubble">
                   <div>${m.content}</div>
                   <div class="chat-bubble-time">${m.time}</div>
@@ -1128,65 +1515,59 @@ function renderChatScreen() {
               </div>
             `;
         }).join('')}
-
+ 
         ${state.isProcessingChat ? `
-          <div class="chat-loader">
-            <div class="chat-loader-dot"></div>
-            <div class="chat-loader-dot"></div>
-            <div class="chat-loader-dot"></div>
+          <div class="chat-bubble-row assistant temp" id="temp-chat-loader">
+            <div class="chat-loader">
+              <div class="chat-loader-dot"></div>
+              <div class="chat-loader-dot"></div>
+              <div class="chat-loader-dot"></div>
           </div>
         ` : ''}
 
-        <!-- Today's logged items checklist directly inside scroller so it never gets cut off -->
-        ${activeFoods.length > 0 || activeExercises.length > 0 ? `
-          <div class="today-logs-box" style="margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 16px;">
-            <h4 style="font-size: 0.9rem; font-weight: 700; margin-bottom: 12px; color: var(--on-surface-variant);">Logged Items Today</h4>
-            <div class="entries-list">
-              ${activeFoods.map(f => `
-                <div class="entry-card food">
-                  <div class="entry-info">
-                    <div class="entry-icon"><i data-lucide="utensils"></i></div>
-                    <div class="entry-detail-box">
-                      <span class="entry-name">${f.name}</span>
-                      <span class="entry-subtext">${f.servingSize ? `<b>${f.servingSize}</b> · ` : ''}P: ${f.proteinG}g · C: ${f.carbsG}g · F: ${f.fatG}g</span>
-                    </div>
-                  </div>
-                  <div class="entry-value-box">
-                    <span class="entry-calories">${f.calories} kcal</span>
-                    <button class="delete-btn btn-delete-food" data-id="${f.id}"><i data-lucide="trash-2"></i></button>
-                  </div>
-                </div>
-              `).join('')}
-              
-              ${activeExercises.map(e => `
-                <div class="entry-card exercise">
-                  <div class="entry-info">
-                    <div class="entry-icon"><i data-lucide="dumbbell"></i></div>
-                    <div class="entry-detail-box">
-                      <span class="entry-name">${e.name}</span>
-                      <span class="entry-subtext">${e.duration} mins</span>
-                    </div>
-                  </div>
-                  <div class="entry-value-box">
-                    <span class="entry-calories">-${e.caloriesBurned} kcal</span>
-                    <button class="delete-btn btn-delete-exercise" data-id="${e.id}"><i data-lucide="trash-2"></i></button>
-                  </div>
-                </div>
-              `).join('')}
-            </div>
-          </div>
-        ` : ''}
-        
         <!-- Bottom scroll spacer to guarantee no elements leak under the floating input capsule -->
         <div class="chat-bottom-spacer" style="height: 80px; flex-shrink: 0; width: 100%;"></div>
       </div>
 
+      <!-- Bookmarks Popup Overlay -->
+      ${state.showBookmarksPopup ? `
+        <div class="bookmarks-popup" id="bookmarks-popup-container">
+          <div class="bookmarks-popup-header">
+            <span>Saved Food Items</span>
+            <button id="btn-close-bookmarks" style="background:none; border:none; color:var(--primary); font-weight:700; cursor:pointer;">Close</button>
+          </div>
+          <div class="bookmarks-list">
+            ${state.bookmarks.length === 0 ? `
+              <div class="bookmark-empty-state">No saved food items. Click the bookmark icon on logged food cards to save them!</div>
+            ` : state.bookmarks.map(b => `
+              <div class="bookmark-item">
+                <span class="bookmark-text" data-query="${escapeHtml(b.query)}" data-items="${escapeHtml(JSON.stringify(b.items || []))}">${escapeHtml(b.query)}</span>
+                <button class="btn-delete-bookmark" data-id="${b.id}" title="Remove Bookmark">
+                  <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+                </button>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
       <!-- Bottom entry chat bar -->
       <div class="chat-input-bar">
-        <input type="text" id="chat-input" placeholder="Type logs e.g. 'I had 3 boiled eggs and black coffee'..." />
+        <input type="text" id="chat-input" placeholder="What did you eat or exercise?" />
+        <div class="chat-input-actions">
+          <button class="action-btn" id="btn-bookmark-list" title="View Bookmarks">
+            <i data-lucide="bookmark"></i>
+          </button>
+          <button class="action-btn" id="btn-gallery-trigger" title="Upload Food Image">
+            <i data-lucide="image"></i>
+          </button>
+        </div>
         <button class="chat-send-btn" id="btn-send-chat">
           <i data-lucide="send"></i>
         </button>
+
+        <!-- Hidden inputs for image uploading -->
+        <input type="file" id="gallery-input" accept="image/*" style="display: none;" />
       </div>
     </div>
   `;
@@ -1217,32 +1598,96 @@ function renderMacroBar(label, current, goal, unit, color) {
 
 function renderCalendarStrip(selectedDate) {
   const today = new Date();
+  const todayStr = getLocalDateString(today);
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   
   const weekDays = [];
-  // Generate 30 days backwards from today
   for (let i = 29; i >= 0; i--) {
     const d = new Date();
     d.setDate(today.getDate() - i);
     weekDays.push(d);
   }
 
+  // Label for the chip
+  const selStr = state.selectedDateStr;
+  let chipLabel = selStr;
+  if (selStr === todayStr) chipLabel = 'Today';
+  else if (selStr === getLocalDateString(new Date(today.getTime() - 86400000))) chipLabel = 'Yesterday';
+  else {
+    const d = parseLocalDate(selStr);
+    chipLabel = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
   return `
-    <div class="calendar-strip" id="calendar-strip-container">
-      ${weekDays.map(date => {
-        const dateStr = getLocalDateString(date);
-        const isSelected = dateStr === state.selectedDateStr;
-        const isToday = dateStr === getLocalDateString(today);
-        
-        return `
-          <div class="day-cell ${isSelected ? 'selected' : ''}" data-date="${dateStr}">
-            <span class="day-label">${dayNames[date.getDay()]}</span>
-            <div class="day-num-box">${date.getDate()}</div>
-            ${isToday ? '<div class="today-dot"></div>' : ''}
-          </div>
-        `;
-      }).join('')}
+    <div class="calendar-strip-wrapper">
+      <button class="date-chip" id="btn-date-chip">
+        <i data-lucide="calendar" style="width:13px;height:13px;"></i>
+        ${chipLabel}
+        <i data-lucide="chevron-down" style="width:12px;height:12px;opacity:0.7;"></i>
+      </button>
+      <div class="calendar-strip" id="calendar-strip-container">
+        ${weekDays.map(date => {
+          const dateStr = getLocalDateString(date);
+          const isSelected = dateStr === state.selectedDateStr;
+          const isToday = dateStr === todayStr;
+          const hasLog = state.foodEntries.some(f => f.dateStr === dateStr) || state.exerciseEntries.some(e => e.dateStr === dateStr);
+          return `
+            <div class="day-cell ${isSelected ? 'selected' : ''} ${hasLog ? 'has-log' : ''}" data-date="${dateStr}">
+              <span class="day-label">${dayNames[date.getDay()]}</span>
+              <div class="day-num-box">${date.getDate()}</div>
+              ${isToday ? '<div class="today-dot"></div>' : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
     </div>
+
+    <!-- Calendar modal -->
+    <div class="cal-modal-overlay" id="cal-modal-overlay" style="display:none;">
+      <div class="cal-modal" id="cal-modal">
+        ${renderCalendarModal()}
+      </div>
+    </div>
+  `;
+}
+
+function renderCalendarModal() {
+  const today = new Date();
+  const todayStr = getLocalDateString(today);
+  const calMonth = state._calMonth || { y: today.getFullYear(), m: today.getMonth() };
+  const firstDay = new Date(calMonth.y, calMonth.m, 1);
+  const lastDay = new Date(calMonth.y, calMonth.m + 1, 0);
+  const monthName = firstDay.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+  const datesWithEntries = new Set([
+    ...state.foodEntries.map(f => f.dateStr),
+    ...state.exerciseEntries.map(e => e.dateStr)
+  ]);
+
+  const cells = [];
+  // Empty prefix
+  for (let i = 0; i < firstDay.getDay(); i++) cells.push('<div class="cal-cell empty"></div>');
+  // Days
+  for (let d = 1; d <= lastDay.getDate(); d++) {
+    const dateObj = new Date(calMonth.y, calMonth.m, d);
+    const dateStr = getLocalDateString(dateObj);
+    const isFuture = dateStr > todayStr;
+    const isSelected = dateStr === state.selectedDateStr;
+    const hasEntry = datesWithEntries.has(dateStr);
+    const isToday = dateStr === todayStr;
+    cells.push(`<div class="cal-cell ${isSelected ? 'sel' : ''} ${hasEntry ? 'has-entry' : ''} ${isToday ? 'is-today' : ''} ${isFuture ? 'future' : ''}" data-caldate="${dateStr}">${d}</div>`);
+  }
+
+  return `
+    <div class="cal-header">
+      <button class="cal-nav" id="cal-prev"><i data-lucide="chevron-left"></i></button>
+      <span class="cal-month-label">${monthName}</span>
+      <button class="cal-nav" id="cal-next"><i data-lucide="chevron-right"></i></button>
+    </div>
+    <div class="cal-day-labels">
+      ${['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => `<div>${d}</div>`).join('')}
+    </div>
+    <div class="cal-grid">${cells.join('')}</div>
   `;
 }
 
@@ -1250,7 +1695,7 @@ function renderCalendarStrip(selectedDate) {
 function renderWeeklyScreen() {
   const tabs = ["This week", "Last week", "2 weeks ago", "3 weeks ago"];
   const selectedTab = localStorage.getItem('weeklyTab') || '0';
-  const tabIndex = parseInt(selectedTab);
+  const tabIndex = parseInt(selectedTab) || 0;
 
   // Bounds
   const today = new Date();
@@ -1768,45 +2213,77 @@ function renderGoalsScreen() {
 // ── Reminders Screen ─────────────────────────────────────────────────────────
 function renderRemindersScreen() {
   function format12Hour(time24) {
+    if (!time24) return '';
     const [h, m] = time24.split(':').map(Number);
     const pm = h >= 12;
     const h12 = h % 12 === 0 ? 12 : h % 12;
     return `${h12}:${String(m).padStart(2,'0')} ${pm ? 'PM' : 'AM'}`;
   }
 
+  const defaultRemindersHtml = `
+    <!-- Morning -->
+    <div class="reminder-card-row">
+      <div class="reminder-time-trigger" data-type="morning">
+        <span class="reminder-label">Morning</span>
+        <span class="reminder-time">${format12Hour(state.morningTime)}</span>
+      </div>
+      <div class="reminder-check ${state.morningEnabled ? 'checked' : ''}" data-type="morning">
+        ${state.morningEnabled ? '<i data-lucide="check"></i>' : ''}
+      </div>
+    </div>
+
+    <!-- Afternoon -->
+    <div class="reminder-card-row">
+      <div class="reminder-time-trigger" data-type="afternoon">
+        <span class="reminder-label">Afternoon</span>
+        <span class="reminder-time">${format12Hour(state.afternoonTime)}</span>
+      </div>
+      <div class="reminder-check ${state.afternoonEnabled ? 'checked' : ''}" data-type="afternoon">
+        ${state.afternoonEnabled ? '<i data-lucide="check"></i>' : ''}
+      </div>
+    </div>
+
+    <!-- Evening -->
+    <div class="reminder-card-row">
+      <div class="reminder-time-trigger" data-type="evening">
+        <span class="reminder-label">Evening</span>
+        <span class="reminder-time">${format12Hour(state.eveningTime)}</span>
+      </div>
+      <div class="reminder-check ${state.eveningEnabled ? 'checked' : ''}" data-type="evening">
+        ${state.eveningEnabled ? '<i data-lucide="check"></i>' : ''}
+      </div>
+    </div>
+  `;
+
+  const customRemindersHtml = state.customReminders.map(rem => `
+    <div class="reminder-card-row" style="position: relative;">
+      <div class="reminder-time-trigger custom-reminder-time-trigger" data-id="${rem.id}">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="reminder-label" style="font-weight: 700; color: var(--on-surface);">${rem.label}</span>
+          <button class="btn-delete-custom-reminder" data-id="${rem.id}" style="background: none; border: none; color: var(--error); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 2px;">
+            <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+          </button>
+        </div>
+        <span class="reminder-time">${format12Hour(rem.time)}</span>
+      </div>
+      <div class="reminder-check custom-reminder-check ${rem.enabled ? 'checked' : ''}" data-id="${rem.id}">
+        ${rem.enabled ? '<i data-lucide="check"></i>' : ''}
+      </div>
+    </div>
+  `).join('');
+
   return `
-    <div class="reminder-list-box">
-      <!-- Morning -->
-      <div class="reminder-card-row">
-        <div class="reminder-time-trigger" data-type="morning">
-          <span class="reminder-label">Morning</span>
-          <span class="reminder-time">${format12Hour(state.morningTime)}</span>
-        </div>
-        <div class="reminder-check ${state.morningEnabled ? 'checked' : ''}" data-type="morning">
-          ${state.morningEnabled ? '<i data-lucide="check"></i>' : ''}
-        </div>
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 0 4px;">
+        <span style="font-size: 0.9rem; font-weight: 600; color: var(--on-surface-variant);">Daily Reminders</span>
+        <button id="btn-add-reminder" class="btn-style primary" style="padding: 6px 12px; border-radius: var(--radius-sm); font-size: 0.8rem; display: flex; align-items: center; gap: 4px; font-weight: 700; height: 32px; cursor: pointer;">
+          <i data-lucide="plus" style="width: 14px; height: 14px;"></i> Add Reminder
+        </button>
       </div>
 
-      <!-- Afternoon -->
-      <div class="reminder-card-row">
-        <div class="reminder-time-trigger" data-type="afternoon">
-          <span class="reminder-label">Afternoon</span>
-          <span class="reminder-time">${format12Hour(state.afternoonTime)}</span>
-        </div>
-        <div class="reminder-check ${state.afternoonEnabled ? 'checked' : ''}" data-type="afternoon">
-          ${state.afternoonEnabled ? '<i data-lucide="check"></i>' : ''}
-        </div>
-      </div>
-
-      <!-- Evening -->
-      <div class="reminder-card-row">
-        <div class="reminder-time-trigger" data-type="evening">
-          <span class="reminder-label">Evening</span>
-          <span class="reminder-time">${format12Hour(state.eveningTime)}</span>
-        </div>
-        <div class="reminder-check ${state.eveningEnabled ? 'checked' : ''}" data-type="evening">
-          ${state.eveningEnabled ? '<i data-lucide="check"></i>' : ''}
-        </div>
+      <div class="reminder-list-box" style="display: flex; flex-direction: column; gap: 12px;">
+        ${defaultRemindersHtml}
+        ${customRemindersHtml}
       </div>
     </div>
   `;
@@ -1878,6 +2355,46 @@ function renderSettingsScreen() {
         </p>
       </div>
 
+      <!-- App Guided Tour Card -->
+      <div class="card-content-box">
+        <h3 style="font-size: 1.15rem;">App Guided Tour</h3>
+        <p style="font-size: 0.85rem; color: var(--on-surface-variant)">
+          Want a quick walkthrough of Daywise features? Launch the interactive tour to review the chat logger, bookmarks, photo logging, and daily planner modules.
+        </p>
+        <button id="btn-start-tour" class="btn-style primary" style="margin-top: 12px; width: fit-content; gap: 8px;">
+          <i data-lucide="play" style="width: 16px; height: 16px;"></i> Start Guided Tour
+        </button>
+      </div>
+
+      <!-- Support & Donate Card -->
+      <div class="card-content-box" style="border: 1.5px solid var(--border-visible); background-color: var(--surface); display: flex; flex-direction: column; gap: 16px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div style="background-color: rgba(46, 125, 50, 0.1); color: var(--primary); padding: 8px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+            <i data-lucide="heart" style="width: 20px; height: 20px; fill: var(--primary);"></i>
+          </div>
+          <h3 style="margin: 0; font-size: 1.15rem;">Support the Developer</h3>
+        </div>
+        
+        <p style="font-size: 0.88rem; color: var(--on-surface-variant); line-height: 1.5; margin: 0;">
+          All this was done for the community for free. Your support is highly appreciated to help build more such apps!
+        </p>
+
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 12px; background: var(--background); padding: 16px; border-radius: 16px; border: 1px dashed var(--border-visible);">
+          <img src="data:image/jpeg;base64,${donateQrBase64.trim()}" alt="UPI QR Code" style="width: 180px; height: 180px; border-radius: 12px; box-shadow: var(--shadow-sm); background: white; padding: 4px;" />
+          <div style="text-align: center; display: flex; flex-direction: column; gap: 4px;">
+            <span style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.6; font-weight: 700;">Scan QR or pay to UPI ID</span>
+            <strong style="font-size: 0.88rem; color: var(--primary); word-break: break-all;">vishwajeetpisaldeshmukh17@okicici</strong>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: center; align-items: center; font-size: 0.85rem; color: var(--on-surface-variant); border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px;">
+          <span>Build with ❤️ by&nbsp;</span>
+          <a href="https://github.com/Vishwazeer" target="_blank" style="color: var(--primary); font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
+            Vishwazeer <i data-lucide="external-link" style="width: 12px; height: 12px;"></i>
+          </a>
+        </div>
+      </div>
+
       <!-- Danger Zone Card -->
       <div class="card-content-box" style="border: 1px solid hsla(355, 75%, 45%, 0.15); background-color: var(--error-container); color: var(--error)">
         <h3 style="font-size: 1.15rem; color: var(--error)">Danger Zone</h3>
@@ -1934,8 +2451,10 @@ function mountApp() {
   if (screenBody) {
     if (state.currentScreen === 'chat') {
       screenBody.style.padding = '0';
+      screenBody.style.overflow = 'hidden';
     } else {
       screenBody.style.padding = '16px';
+      screenBody.style.overflow = 'auto';
     }
   }
 
@@ -1988,6 +2507,36 @@ function mountApp() {
 
   // Attach general event listeners
   attachEventListeners();
+
+  // Clear any previous tour highlights
+  document.querySelectorAll('.tour-highlight').forEach(el => el.classList.remove('tour-highlight'));
+  
+  if (state.isTourActive) {
+    // Force sidebar open on step 5
+    if (state.tourStep === 5) {
+      state.isSidebarOpen = true;
+      const sidebar = document.getElementById('sidebar');
+      const backdrop = document.getElementById('sidebar-backdrop');
+      if (sidebar && backdrop) {
+        sidebar.classList.add('drawer-open');
+        backdrop.classList.add('active');
+      }
+    }
+    
+    let targetSelector = '';
+    if (state.tourStep === 1) targetSelector = '.chat-input-bar';
+    else if (state.tourStep === 2) targetSelector = '.log-card.food';
+    else if (state.tourStep === 3) targetSelector = '#btn-gallery-trigger';
+    else if (state.tourStep === 4) targetSelector = '#btn-toggle-sidebar';
+    else if (state.tourStep === 5) targetSelector = '#sidebar';
+    
+    if (targetSelector) {
+      const el = document.querySelector(targetSelector);
+      if (el) {
+        el.classList.add('tour-highlight');
+      }
+    }
+  }
   
   // Re-draw canvas if Weight Screen is active
   if (state.currentScreen === 'weight_tracker') {
@@ -2079,8 +2628,24 @@ function attachEventListeners() {
       if (step === 0) {
         state.onboardingStep = 1;
       } else if (step === 1) {
-        if (!state.onboardingData.age || !state.onboardingData.height || !state.onboardingData.weight) {
+        const age = parseInt(state.onboardingData.age);
+        const height = parseFloat(state.onboardingData.height);
+        const weight = parseFloat(state.onboardingData.weight);
+
+        if (!age || !height || !weight) {
           showToast("Please fill in all basic info profile parameters!", "error");
+          return;
+        }
+        if (age < 12 || age > 100) {
+          showToast("Please enter an age between 12 and 100.", "error");
+          return;
+        }
+        if (height < 100 || height > 250) {
+          showToast("Please enter a height between 100 and 250 cm.", "error");
+          return;
+        }
+        if (weight < 30 || weight > 250) {
+          showToast("Please enter a weight between 30 and 250 kg.", "error");
           return;
         }
         state.onboardingStep = 2;
@@ -2089,8 +2654,24 @@ function attachEventListeners() {
       } else if (step === 3) {
         state.onboardingStep = 4;
       } else if (step === 4) {
-        if (!state.onboardingData.targetWeight) {
+        const target = parseFloat(state.onboardingData.targetWeight);
+        if (!target) {
           showToast("Please set a realistic target weight!", "error");
+          return;
+        }
+        if (target < 30 || target > 250) {
+          showToast("Please enter a target weight between 30 and 250 kg.", "error");
+          return;
+        }
+        
+        const height = parseFloat(state.onboardingData.height) || 170;
+        const targetBmi = target / ((height / 100) * (height / 100));
+        if (targetBmi < 15) {
+          showToast("Target weight is too low for height (underweight limit). Enter healthier target weight.", "error");
+          return;
+        }
+        if (targetBmi > 45) {
+          showToast("Target weight is too high for height. Enter a more realistic target weight.", "error");
           return;
         }
         state.onboardingStep = 5;
@@ -2120,10 +2701,62 @@ function attachEventListeners() {
         state.isMale = state.onboardingData.gender === 'Male';
         state.weightGoal = state.onboardingData.goal.toLowerCase();
         state.aggression = state.onboardingData.aggression.toLowerCase();
-        state.hasCompletedOnboarding = true;
 
+        state.onboardingStep = 6;
+      } else if (step === 6) {
+        state.onboardingStep = 7;
+      } else if (step === 7) {
+        const keyInput = document.getElementById('ob-gemini-key');
+        if (keyInput) {
+          state.apiKey = keyInput.value.trim();
+        }
+        state.hasCompletedOnboarding = true;
+        state.isTourActive = true;
+        state.tourStep = 1;
+        state.currentScreen = 'chat';
         saveStateToStorage();
       }
+      mountApp();
+    });
+  }
+
+  // Onboarding Gemini API key setup elements
+  const obGeminiKey = document.getElementById('ob-gemini-key');
+  if (obGeminiKey) {
+    obGeminiKey.addEventListener('input', (e) => {
+      state.apiKey = e.target.value.trim();
+    });
+  }
+
+  const obToggleKeyVisibility = document.getElementById('ob-toggle-key-visibility');
+  if (obToggleKeyVisibility) {
+    obToggleKeyVisibility.addEventListener('click', () => {
+      const keyInput = document.getElementById('ob-gemini-key');
+      if (keyInput) {
+        const isPassword = keyInput.type === 'password';
+        keyInput.type = isPassword ? 'text' : 'password';
+        obToggleKeyVisibility.innerHTML = isPassword ? `<i data-lucide="eye-off"></i>` : `<i data-lucide="eye"></i>`;
+        createIcons({ icons });
+      }
+    });
+  }
+
+  const btnTutorialVideo = document.getElementById('btn-tutorial-video');
+  if (btnTutorialVideo) {
+    btnTutorialVideo.addEventListener('click', () => {
+      window.open('https://www.youtube.com/watch?v=6BRyynZkvf0', '_blank');
+    });
+  }
+
+  const btnObSkipKey = document.getElementById('btn-ob-skip-key');
+  if (btnObSkipKey) {
+    btnObSkipKey.addEventListener('click', () => {
+      state.apiKey = '';
+      state.hasCompletedOnboarding = true;
+      state.isTourActive = true;
+      state.tourStep = 1;
+      state.currentScreen = 'chat';
+      saveStateToStorage();
       mountApp();
     });
   }
@@ -2150,6 +2783,64 @@ function attachEventListeners() {
       mountApp();
     });
   });
+
+  // ── Calendar modal ────────────────────────────────────────────────────────
+  const calOverlay = document.getElementById('cal-modal-overlay');
+  const btnDateChip = document.getElementById('btn-date-chip');
+
+  const openCalModal = () => {
+    if (!state._calMonth) {
+      const sel = parseLocalDate(state.selectedDateStr);
+      state._calMonth = { y: sel.getFullYear(), m: sel.getMonth() };
+    }
+    const calModal = document.getElementById('cal-modal');
+    if (calModal) {
+      calModal.innerHTML = renderCalendarModal();
+      bindCalendarCells();
+    }
+    if (calOverlay) calOverlay.style.display = 'flex';
+  };
+  const closeCalModal = () => { if (calOverlay) calOverlay.style.display = 'none'; };
+
+  if (btnDateChip) btnDateChip.addEventListener('click', openCalModal);
+
+  function bindCalendarCells() {
+    document.querySelectorAll('.cal-cell[data-caldate]').forEach(cell => {
+      if (cell.classList.contains('future')) return;
+      cell.addEventListener('click', () => {
+        state.selectedDateStr = cell.dataset.caldate;
+        state._calMonth = null;
+        closeCalModal();
+        mountApp();
+      });
+    });
+    document.getElementById('cal-prev')?.addEventListener('click', () => {
+      if (!state._calMonth) return;
+      state._calMonth.m--; if (state._calMonth.m < 0) { state._calMonth.m = 11; state._calMonth.y--; }
+      const calModal = document.getElementById('cal-modal');
+      if (calModal) {
+        calModal.innerHTML = renderCalendarModal();
+        bindCalendarCells();
+      }
+    });
+    document.getElementById('cal-next')?.addEventListener('click', () => {
+      if (!state._calMonth) return;
+      const today = new Date();
+      state._calMonth.m++; if (state._calMonth.m > 11) { state._calMonth.m = 0; state._calMonth.y++; }
+      if (state._calMonth.y > today.getFullYear() || (state._calMonth.y === today.getFullYear() && state._calMonth.m > today.getMonth())) {
+        state._calMonth.m--; if (state._calMonth.m < 0) { state._calMonth.m = 11; state._calMonth.y--; }
+      }
+      const calModal = document.getElementById('cal-modal');
+      if (calModal) {
+        calModal.innerHTML = renderCalendarModal();
+        bindCalendarCells();
+      }
+    });
+    createIcons({ icons });
+  }
+
+  if (calOverlay) calOverlay.addEventListener('click', (e) => { if (e.target === calOverlay) closeCalModal(); });
+
 
   // Toggle detailed nutrition collapsible dropdown in-place (no full app mount to avoid flashes)
   const btnToggleNutrition = document.getElementById('btn-toggle-nutrition-dropdown');
@@ -2330,128 +3021,474 @@ function attachEventListeners() {
     });
   }
 
-  // Sending chat text logs
-  const btnSendChat = document.getElementById('btn-send-chat');
-  const chatInput = document.getElementById('chat-input');
-  
-  if (btnSendChat && chatInput) {
-    const handleSend = async () => {
-      const txt = chatInput.value.trim();
-      if (!txt) return;
+  // Sending chat text logs and media processing
+  const processMessageParse = async (txt, imageFileObj = null) => {
+    const userMsgId = Date.now();
+    const assistantMsgId = userMsgId + 1;
 
-      chatInput.value = '';
-      
-      // Append user bubble
-      state.chatMessages.push({
-        id: Date.now(),
-        dateStr: state.selectedDateStr,
-        content: txt,
-        isUser: true,
-        time: new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    // 1. Push status bubble — user side for text, bot side for image analysis
+    state.chatMessages.push({
+      id: userMsgId,
+      dateStr: state.selectedDateStr,
+      content: imageFileObj ? "📷 Analyzing food image..." : txt,
+      isUser: imageFileObj ? false : true,
+      isTemp: true,
+      time: new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    });
+
+    state.isProcessingChat = true;
+    mountApp();
+
+    // Scroll to bottom so they see user bubble and loader
+    setTimeout(() => {
+      const scroller = document.getElementById('chat-scroller');
+      if (scroller) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    }, 50);
+
+    // 2. Call Gemini
+    let parsed = await parseInputWithGemini(txt, imageFileObj);
+    state.isProcessingChat = false;
+
+    // Guard empty parsed items for food and exercise
+    if (parsed.type === 'food' && (!parsed.items || parsed.items.length === 0)) {
+      parsed.type = 'unknown';
+      parsed.message = "I couldn't identify any food items. Try typing something like 'I had 3 eggs for breakfast'!";
+    }
+    if (parsed.type === 'exercise' && (!parsed.items || parsed.items.length === 0)) {
+      parsed.type = 'unknown';
+      parsed.message = "I couldn't identify any workouts. Try typing something like 'run for 30 minutes'!";
+    }
+
+    const modelName = parsed.modelUsed || state.openRouterModel || 'gemini-2.5-flash';
+
+    if (parsed.type === 'food') {
+      parsed.items.forEach(item => {
+        const cals = Math.round(item.calories || 0);
+        const prot = Math.round(item.protein_g || item.proteinG || 0);
+        const carb = Math.round(item.carbs_g || item.carbsG || 0);
+        const fat = Math.round(item.fat_g || item.fatG || 0);
+        const itemQty = item.serving_size || item.servingSize || "1 serving (assumed)";
+        state.foodEntries.push({
+          id: Date.now() + Math.random(),
+          dateStr: state.selectedDateStr,
+          name: item.name,
+          calories: cals,
+          proteinG: prot,
+          carbsG: carb,
+          fatG: fat,
+          servingSize: itemQty,
+          timestamp: Date.now(),
+          messageId: assistantMsgId
+        });
       });
+    } else if (parsed.type === 'exercise') {
+      parsed.items.forEach(item => {
+        const mins = Math.round(item.duration_minutes || item.durationMinutes || 0);
+        const burned = Math.round(item.calories_burned || item.caloriesBurned || 0);
+        state.exerciseEntries.push({
+          id: Date.now() + Math.random(),
+          dateStr: state.selectedDateStr,
+          name: item.name,
+          duration: mins,
+          caloriesBurned: burned,
+          timestamp: Date.now(),
+          messageId: assistantMsgId
+        });
+      });
+    }
+
+    // 3. Handle Vanishing Animation vs Standard conversational response
+    if (parsed.type === 'food' || parsed.type === 'exercise') {
+      // Vanish ALL user bubbles, temp bubbles, and error bubbles from DOM
+      document.querySelectorAll('.chat-bubble-row.temp').forEach(row => row.classList.add('vanish'));
+      document.querySelectorAll('.chat-bubble-row.error-msg-bubble').forEach(row => row.classList.add('vanish'));
+      document.querySelectorAll('.chat-bubble-row[data-is-user]').forEach(row => row.classList.add('vanish'));
+
+      // Wait 400ms for CSS vanish transition
+      setTimeout(() => {
+        // Remove all user bubbles, temp messages, and error messages — only log cards remain
+        state.chatMessages = state.chatMessages.filter(m => !m.isUser && !m.isTemp && m.messageType !== 'unknown' && m.messageType !== 'error');
+
+        // Push permanent assistant card with isIncomingCard = true
+        state.chatMessages.push({
+          id: assistantMsgId,
+          dateStr: state.selectedDateStr,
+          content: '',
+          rawQuery: imageFileObj ? "📷 Analysed Food Image" : txt,
+          isUser: false,
+          messageType: parsed.type,
+          modelUsed: modelName,
+          isIncomingCard: true,
+          time: new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+        });
+
+        saveStateToStorage();
+        mountApp();
+
+        // Scroll to bottom smoothly across card height animation duration
+        const scrollToBottom = () => {
+          const scroller = document.getElementById('chat-scroller');
+          if (scroller) {
+            scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+          }
+        };
+        setTimeout(scrollToBottom, 50);
+        setTimeout(scrollToBottom, 200);
+        setTimeout(scrollToBottom, 500);
+      }, 400);
+
+
+    } else {
+      // For errors or unknown types, don't vanish the query (unless it's an image analysis bubble)
+      const userBubble = state.chatMessages.find(m => m.id === userMsgId);
+      if (userBubble) {
+        if (imageFileObj) {
+          // It was an image upload, remove the "Analyzing food image..." bubble entirely
+          state.chatMessages = state.chatMessages.filter(m => m.id !== userMsgId);
+        } else {
+          // Text query, keep it permanent
+          delete userBubble.isTemp;
+        }
+      }
       
-      state.isProcessingChat = true;
-      mountApp();
+      // Filter out other temp items (like the loader)
+      state.chatMessages = state.chatMessages.filter(m => (m.id === userMsgId && !imageFileObj) || !m.isTemp);
 
-      // Process with Gemini API
-      let parsed = await parseInputWithGemini(txt);
-      state.isProcessingChat = false;
-
-      let reply = "";
-      if (parsed.fallbackUsed) {
-        reply += `⚠️ Gemini 2.5 limit/availability reached. Auto-fallback to gemini-3.5-flash succeeded!\n\n`;
-      }
-
-      // Guard empty parsed items for food and exercise (e.g. from garbage inputs like "wow")
-      if (parsed.type === 'food' && (!parsed.items || parsed.items.length === 0)) {
-        parsed.type = 'unknown';
-        parsed.message = "I couldn't identify any food items in your message. Try saying something like 'I had 3 scrambled eggs for breakfast'!";
-      }
-      if (parsed.type === 'exercise' && (!parsed.items || parsed.items.length === 0)) {
-        parsed.type = 'unknown';
-        parsed.message = "I couldn't identify any exercise items in your message. Try saying something like 'walked for 45 minutes'!";
-      }
-
-      const assistantMsgId = Date.now() + 1; // Unique ID for assistant response
-      const modelName = parsed.modelUsed || state.openRouterModel || 'gemini-2.5-flash';
-
+      // Append assistant reply bubble (truncate to prevent overflow)
+      const truncate = (s, n) => s.length > n ? s.substring(0, n) + '…' : s;
+      let reply = '';
       if (parsed.type === 'error') {
-        reply = `⚠️ AI failed: ${parsed.message}`;
-      } else if (parsed.type === 'food') {
-        parsed.items.forEach(item => {
-          const cals = Math.round(item.calories || 0);
-          const prot = Math.round(item.protein_g || item.proteinG || 0);
-          const carb = Math.round(item.carbs_g || item.carbsG || 0);
-          const fat = Math.round(item.fat_g || item.fatG || 0);
-
-          const itemQty = item.serving_size || item.servingSize || "1 serving (assumed)";
-          const foodEntry = {
-            id: Date.now() + Math.random(),
-            dateStr: state.selectedDateStr,
-            name: item.name,
-            calories: cals,
-            proteinG: prot,
-            carbsG: carb,
-            fatG: fat,
-            servingSize: itemQty,
-            timestamp: Date.now(),
-            messageId: assistantMsgId
-          };
-          state.foodEntries.push(foodEntry);
-        });
-
-      } else if (parsed.type === 'exercise') {
-        parsed.items.forEach(item => {
-          const mins = Math.round(item.duration_minutes || item.durationMinutes || 0);
-          const burned = Math.round(item.calories_burned || item.caloriesBurned || 0);
-
-          const exerciseEntry = {
-            id: Date.now() + Math.random(),
-            dateStr: state.selectedDateStr,
-            name: item.name,
-            duration: mins,
-            caloriesBurned: burned,
-            timestamp: Date.now(),
-            messageId: assistantMsgId
-          };
-          state.exerciseEntries.push(exerciseEntry);
-        });
-
-      } else if (parsed.type === 'unknown') {
-        const msg = parsed.message || "I couldn't identify any specific food or exercise in your message. Try saying something like 'I had 3 scrambled eggs' or 'jogged for 30 minutes'!";
-        reply += `⚠️ ${msg}`;
+        reply = `⚠️ ${truncate(parsed.message || 'AI request failed.', 180)}`;
+      } else {
+        reply = `⚠️ ${truncate(parsed.message || "I couldn't identify any specific food or exercise in your message.", 180)}`;
       }
 
-      // Append assistant reply bubble
       state.chatMessages.push({
         id: assistantMsgId,
         dateStr: state.selectedDateStr,
-        content: parsed.type === 'food' || parsed.type === 'exercise' ? '' : reply,
+        content: reply,
         isUser: false,
         messageType: parsed.type,
         modelUsed: modelName,
-        hasTable: parsed.type === 'food' || parsed.type === 'exercise',
         time: new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
       });
 
       saveStateToStorage();
       mountApp();
-      
-      // Scroll smoothly to bottom of chat after DOM render settlements
+
       setTimeout(() => {
         const scroller = document.getElementById('chat-scroller');
         if (scroller) {
-          scroller.scrollTo({
-            top: scroller.scrollHeight,
-            behavior: 'smooth'
-          });
+          scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
         }
-      }, 60);
-    };
+      }, 50);
+    }
+  };
 
+  const logBookmarkedItems = (query, items) => {
+    const userMsgId = Date.now();
+    const assistantMsgId = userMsgId + 1;
+
+    items.forEach(item => {
+      const cals = Math.round(item.calories || 0);
+      const prot = Math.round(item.proteinG || item.protein_g || 0);
+      const carb = Math.round(item.carbsG || item.carbs_g || 0);
+      const fat = Math.round(item.fatG || item.fat_g || 0);
+      const itemQty = item.servingSize || item.serving_size || "1 serving (assumed)";
+      state.foodEntries.push({
+        id: Date.now() + Math.random(),
+        dateStr: state.selectedDateStr,
+        name: item.name,
+        calories: cals,
+        proteinG: prot,
+        carbsG: carb,
+        fatG: fat,
+        servingSize: itemQty,
+        timestamp: Date.now(),
+        messageId: assistantMsgId
+      });
+    });
+
+    state.chatMessages.push({
+      id: assistantMsgId,
+      dateStr: state.selectedDateStr,
+      content: '',
+      rawQuery: query,
+      isUser: false,
+      messageType: 'food',
+      modelUsed: 'Saved Bookmark',
+      isIncomingCard: true,
+      time: new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    });
+
+    saveStateToStorage();
+    mountApp();
+
+    setTimeout(() => {
+      const scroller = document.getElementById('chat-scroller');
+      if (scroller) {
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+      }
+    }, 50);
+  };
+
+  // Bind the Send click listener
+  const btnSendChat = document.getElementById('btn-send-chat');
+  const chatInput = document.getElementById('chat-input');
+  if (btnSendChat && chatInput) {
+    const handleSend = () => {
+      const txt = chatInput.value.trim();
+      if (!txt) return;
+      chatInput.value = '';
+      processMessageParse(txt);
+    };
     btnSendChat.addEventListener('click', handleSend);
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') handleSend();
+    });
+  }
+
+  // Delete log group (the entire premium card) completely
+  document.querySelectorAll('.btn-delete-log-group').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const msgId = parseInt(btn.dataset.id);
+      const type = btn.dataset.type;
+      if (type === 'food') {
+        state.foodEntries = state.foodEntries.filter(f => f.messageId !== msgId);
+      } else {
+        state.exerciseEntries = state.exerciseEntries.filter(e => e.messageId !== msgId);
+      }
+      state.chatMessages = state.chatMessages.filter(m => m.id !== msgId);
+      saveStateToStorage();
+      mountApp();
+      showToast('Card deleted successfully!', 'info');
+    });
+  });
+
+  // Bookmarks popup click / toggle events
+  const btnBookmarkList = document.getElementById('btn-bookmark-list');
+  const btnCloseBookmarks = document.getElementById('btn-close-bookmarks');
+  if (btnBookmarkList) {
+    btnBookmarkList.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.showBookmarksPopup = !state.showBookmarksPopup;
+      mountApp();
+    });
+  }
+  if (btnCloseBookmarks) {
+    btnCloseBookmarks.addEventListener('click', () => {
+      state.showBookmarksPopup = false;
+      mountApp();
+    });
+  }
+
+  // Tapping a bookmark — replay stored nutrition data directly (no API call)
+  document.querySelectorAll('.bookmark-text').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const query = btn.dataset.query;
+      const items = JSON.parse(btn.dataset.items || '[]');
+      state.showBookmarksPopup = false;
+      if (items && items.length > 0) {
+        logBookmarkedItems(query, items);
+      } else {
+        // Legacy bookmark without stored items — fall back to API
+        processMessageParse(query);
+      }
+    });
+  });
+
+  // Deleting a bookmark from the popup menu list
+  document.querySelectorAll('.btn-delete-bookmark').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = parseFloat(btn.dataset.id);
+      state.bookmarks = state.bookmarks.filter(b => b.id !== id);
+      saveStateToStorage();
+      mountApp();
+      showToast('Bookmark removed!', 'info');
+    });
+  });
+
+  // Adding/removing bookmarks via card icon — store food item snapshot
+  document.querySelectorAll('.btn-toggle-bookmark-log').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const query = btn.dataset.query;
+      const items = JSON.parse(btn.dataset.items || '[]');
+      const exists = state.bookmarks.find(b => b.query.toLowerCase() === query.toLowerCase());
+      if (exists) {
+        state.bookmarks = state.bookmarks.filter(b => b.query.toLowerCase() !== query.toLowerCase());
+        showToast('Removed from bookmarks!', 'info');
+      } else {
+        state.bookmarks.push({ id: Date.now(), query, items });
+        showToast('Saved to bookmarks!', 'success');
+      }
+      saveStateToStorage();
+      mountApp();
+    });
+  });
+
+  // Image inputs change listeners (Gallery)
+  const galleryInput = document.getElementById('gallery-input');
+  const galleryTrigger = document.getElementById('btn-gallery-trigger');
+
+  if (galleryTrigger && galleryInput) {
+    galleryTrigger.addEventListener('click', () => galleryInput.click());
+  }
+
+  const resizeAndCompressImage = (file, maxDimension = 1024, quality = 0.75) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error("Failed to get 2d canvas context"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+        URL.revokeObjectURL(objectUrl); // Clean up memory reference
+        resolve(compressedDataUrl);
+      };
+      
+      img.onerror = (err) => {
+        URL.revokeObjectURL(objectUrl);
+        reject(err);
+      };
+      
+      img.src = objectUrl;
+    });
+  };
+
+  const handleImageFile = async (inputElement) => {
+    if (inputElement.files && inputElement.files[0]) {
+      const file = inputElement.files[0];
+      console.info(`[Gallery] File received: name=${file.name}, size=${file.size}B, type=${file.type}`);
+      try {
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const dataUrl = e.target.result;
+            resolve(dataUrl.substring(dataUrl.indexOf(',') + 1));
+          };
+          reader.onerror = (e) => reject(new Error('FileReader failed: ' + e));
+          reader.readAsDataURL(file);
+        });
+        console.info(`[Gallery] FileReader OK, base64 length=${base64Data.length}`);
+        await processMessageParse("Analyzing food image...", { mimeType: "image/jpeg", data: base64Data });
+      } catch (err) {
+        console.error("[Gallery] Failed:", err);
+        showToast("Image read failed: " + err.message, "error");
+      }
+      inputElement.value = '';
+    }
+  };
+
+  if (galleryInput) {
+    galleryInput.addEventListener('change', () => handleImageFile(galleryInput));
+  }
+
+  // ── Swipe left/right to navigate dates with drag-tracking ──────────────────
+  const chatScroller = document.getElementById('chat-scroller');
+  if (chatScroller) {
+    let startX = 0;
+    let startY = 0;
+    let currentX = 0;
+    let isDragging = false;
+    let width = chatScroller.clientWidth;
+    let threshold = width * 0.25;
+
+    chatScroller.addEventListener('touchstart', (e) => {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      isDragging = false;
+      width = chatScroller.clientWidth;
+      threshold = width * 0.25;
+      chatScroller.classList.remove('swipe-transition');
+    }, { passive: true });
+
+    chatScroller.addEventListener('touchmove', (e) => {
+      const touchX = e.touches[0].clientX;
+      const touchY = e.touches[0].clientY;
+      const dx = touchX - startX;
+      const dy = touchY - startY;
+
+      if (!isDragging) {
+        if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 10) {
+          isDragging = true;
+        }
+      }
+
+      if (isDragging) {
+        if (e.cancelable) e.preventDefault();
+        currentX = dx;
+        
+        const todayStr = getLocalDateString(new Date());
+        if (state.selectedDateStr === todayStr && dx < 0) {
+          currentX = dx * 0.3; // resistance when dragging left past today
+        }
+        
+        chatScroller.style.transform = `translateX(${currentX}px)`;
+      }
+    }, { passive: false });
+
+    chatScroller.addEventListener('touchend', () => {
+      if (!isDragging) return;
+      isDragging = false;
+
+      chatScroller.classList.add('swipe-transition');
+
+      if (Math.abs(currentX) > threshold) {
+        const cur = parseLocalDate(state.selectedDateStr);
+        const direction = currentX < 0 ? 1 : -1; // -1 means previous day, 1 means next day
+        cur.setDate(cur.getDate() + direction);
+        const newStr = getLocalDateString(cur);
+        const todayStr = getLocalDateString(new Date());
+
+        if (newStr <= todayStr) {
+          const targetTranslate = direction > 0 ? -width : width;
+          chatScroller.style.transform = `translateX(${targetTranslate}px)`;
+
+          setTimeout(() => {
+            state.selectedDateStr = newStr;
+            saveStateToStorage();
+            mountApp();
+
+            const newScroller = document.getElementById('chat-scroller');
+            if (newScroller) {
+              newScroller.classList.remove('swipe-transition');
+              newScroller.style.transform = `translateX(${direction > 0 ? width : -width}px)`;
+              newScroller.offsetHeight; // force reflow
+              newScroller.classList.add('swipe-transition');
+              newScroller.style.transform = 'translateX(0)';
+            }
+          }, 250);
+        } else {
+          chatScroller.style.transform = 'translateX(0)';
+          showToast("Can't go past today", 'info');
+        }
+      } else {
+        chatScroller.style.transform = 'translateX(0)';
+      }
+      currentX = 0;
     });
   }
 
@@ -2466,7 +3503,7 @@ function attachEventListeners() {
   const btnGenerateInsights = document.getElementById('btn-generate-insights');
   if (btnGenerateInsights) {
     btnGenerateInsights.addEventListener('click', () => {
-      const tabIdx = parseInt(btnGenerateInsights.dataset.tab);
+      const tabIdx = parseInt(btnGenerateInsights.dataset.tab) || 0;
       generateWeeklyAIInsights(tabIdx);
     });
   }
@@ -2474,7 +3511,7 @@ function attachEventListeners() {
   const btnRegenerateInsights = document.getElementById('btn-regenerate-insights');
   if (btnRegenerateInsights) {
     btnRegenerateInsights.addEventListener('click', () => {
-      const tabIdx = parseInt(btnRegenerateInsights.dataset.tab);
+      const tabIdx = parseInt(btnRegenerateInsights.dataset.tab) || 0;
       generateWeeklyAIInsights(tabIdx);
     });
   }
@@ -2609,54 +3646,183 @@ function attachEventListeners() {
   }
 
   // ── Reminders Screen Events ────────────────────────────────────────────────
-  document.querySelectorAll('.reminder-check').forEach(chk => {
-    chk.addEventListener('click', () => {
-      const type = chk.dataset.type;
-      if (type === 'morning') state.morningEnabled = !state.morningEnabled;
-      else if (type === 'afternoon') state.afternoonEnabled = !state.afternoonEnabled;
-      else if (type === 'evening') state.eveningEnabled = !state.eveningEnabled;
-      saveStateToStorage();
-      mountApp();
+  if (state.currentScreen === 'reminders') {
+    // Default reminder checks
+    document.querySelectorAll('.reminder-check:not(.custom-reminder-check)').forEach(chk => {
+      chk.addEventListener('click', () => {
+        const type = chk.dataset.type;
+        if (type === 'morning') state.morningEnabled = !state.morningEnabled;
+        else if (type === 'afternoon') state.afternoonEnabled = !state.afternoonEnabled;
+        else if (type === 'evening') state.eveningEnabled = !state.eveningEnabled;
+        saveStateToStorage();
+        syncAlarmsToNative();
+        mountApp();
+      });
     });
-  });
 
-  document.querySelectorAll('.reminder-time-trigger').forEach(trigger => {
-    trigger.addEventListener('click', () => {
-      const type = trigger.dataset.type;
-      const currentVal = type === 'morning' ? state.morningTime : type === 'afternoon' ? state.afternoonTime : state.eveningTime;
-      
-      const modal = document.createElement('div');
-      modal.className = 'modal-overlay';
-      modal.innerHTML = `
-        <div class="modal-box">
-          <span class="modal-title">Edit Reminder Time</span>
-          <div class="form-group">
-            <label>Time</label>
-            <input type="time" id="input-time-val" class="input-style" value="${currentVal}" />
-          </div>
-          <div class="modal-actions">
-            <button class="btn-style secondary" id="btn-cancel-modal">Cancel</button>
-            <button class="btn-style primary" id="btn-confirm-time">Save</button>
-          </div>
-        </div>
-      `;
-      const appContainer = document.getElementById('app') || document.body;
-      appContainer.appendChild(modal);
-
-      document.getElementById('btn-cancel-modal').addEventListener('click', () => modal.remove());
-      document.getElementById('btn-confirm-time').addEventListener('click', () => {
-        const val = document.getElementById('input-time-val').value;
-        if (val) {
-          if (type === 'morning') state.morningTime = val;
-          else if (type === 'afternoon') state.afternoonTime = val;
-          else if (type === 'evening') state.eveningTime = val;
+    // Custom reminder checks
+    document.querySelectorAll('.custom-reminder-check').forEach(chk => {
+      chk.addEventListener('click', () => {
+        const id = chk.dataset.id;
+        const rem = state.customReminders.find(r => r.id === id);
+        if (rem) {
+          rem.enabled = !rem.enabled;
           saveStateToStorage();
-          modal.remove();
+          syncAlarmsToNative();
           mountApp();
         }
       });
     });
-  });
+
+    // Default reminder times
+    document.querySelectorAll('.reminder-time-trigger:not(.custom-reminder-time-trigger)').forEach(trigger => {
+      trigger.addEventListener('click', () => {
+        const type = trigger.dataset.type;
+        const currentVal = type === 'morning' ? state.morningTime : type === 'afternoon' ? state.afternoonTime : state.eveningTime;
+        
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+          <div class="modal-box">
+            <span class="modal-title">Edit Reminder Time</span>
+            <div class="form-group">
+              <label>Time</label>
+              <input type="time" id="input-time-val" class="input-style" value="${currentVal}" />
+            </div>
+            <div class="modal-actions">
+              <button class="btn-style secondary" id="btn-cancel-modal">Cancel</button>
+              <button class="btn-style primary" id="btn-confirm-time">Save</button>
+            </div>
+          </div>
+        `;
+        const appContainer = document.getElementById('app') || document.body;
+        appContainer.appendChild(modal);
+
+        document.getElementById('btn-cancel-modal').addEventListener('click', () => modal.remove());
+        document.getElementById('btn-confirm-time').addEventListener('click', () => {
+          const val = document.getElementById('input-time-val').value;
+          if (val) {
+            if (type === 'morning') state.morningTime = val;
+            else if (type === 'afternoon') state.afternoonTime = val;
+            else if (type === 'evening') state.eveningTime = val;
+            saveStateToStorage();
+            syncAlarmsToNative();
+            modal.remove();
+            mountApp();
+          }
+        });
+      });
+    });
+
+    // Custom reminder times
+    document.querySelectorAll('.custom-reminder-time-trigger').forEach(trigger => {
+      trigger.addEventListener('click', (e) => {
+        if (e.target.closest('.btn-delete-custom-reminder')) return;
+
+        const id = trigger.dataset.id;
+        const rem = state.customReminders.find(r => r.id === id);
+        if (!rem) return;
+
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+          <div class="modal-box">
+            <span class="modal-title">Edit Custom Reminder</span>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Label</label>
+              <input type="text" id="input-custom-label" class="input-style" value="${rem.label}" />
+            </div>
+            <div class="form-group">
+              <label>Time</label>
+              <input type="time" id="input-custom-time" class="input-style" value="${rem.time}" />
+            </div>
+            <div class="modal-actions">
+              <button class="btn-style secondary" id="btn-cancel-modal">Cancel</button>
+              <button class="btn-style primary" id="btn-confirm-custom">Save</button>
+            </div>
+          </div>
+        `;
+        const appContainer = document.getElementById('app') || document.body;
+        appContainer.appendChild(modal);
+
+        document.getElementById('btn-cancel-modal').addEventListener('click', () => modal.remove());
+        document.getElementById('btn-confirm-custom').addEventListener('click', () => {
+          const label = document.getElementById('input-custom-label').value.trim() || 'Custom Reminder';
+          const time = document.getElementById('input-custom-time').value;
+          if (time) {
+            rem.label = label;
+            rem.time = time;
+            saveStateToStorage();
+            syncAlarmsToNative();
+            modal.remove();
+            mountApp();
+          }
+        });
+      });
+    });
+
+    // Delete custom reminder
+    document.querySelectorAll('.btn-delete-custom-reminder').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = btn.dataset.id;
+        if (typeof window.DaywiseAndroid !== 'undefined' && window.DaywiseAndroid.updateAlarm) {
+          window.DaywiseAndroid.updateAlarm(id, '', false, '00:00', '');
+        }
+        state.customReminders = state.customReminders.filter(r => r.id !== id);
+        saveStateToStorage();
+        mountApp();
+      });
+    });
+
+    // Add reminder click
+    const btnAddReminder = document.getElementById('btn-add-reminder');
+    if (btnAddReminder) {
+      btnAddReminder.addEventListener('click', () => {
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+          <div class="modal-box">
+            <span class="modal-title">Add Custom Reminder</span>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Label</label>
+              <input type="text" id="input-add-label" class="input-style" placeholder="e.g. Afternoon Walk" />
+            </div>
+            <div class="form-group">
+              <label>Time</label>
+              <input type="time" id="input-add-time" class="input-style" value="12:00" />
+            </div>
+            <div class="modal-actions">
+              <button class="btn-style secondary" id="btn-cancel-modal">Cancel</button>
+              <button class="btn-style primary" id="btn-confirm-add">Add</button>
+            </div>
+          </div>
+        `;
+        const appContainer = document.getElementById('app') || document.body;
+        appContainer.appendChild(modal);
+
+        document.getElementById('btn-cancel-modal').addEventListener('click', () => modal.remove());
+        document.getElementById('btn-confirm-add').addEventListener('click', () => {
+          const label = document.getElementById('input-add-label').value.trim() || 'Custom Reminder';
+          const time = document.getElementById('input-add-time').value;
+          if (time) {
+            const newId = 'rem-' + Date.now();
+            state.customReminders.push({
+              id: newId,
+              label: label,
+              time: time,
+              enabled: true
+            });
+            saveStateToStorage();
+            syncAlarmsToNative();
+            modal.remove();
+            mountApp();
+          }
+        });
+      });
+    }
+  }
 
   // ── Settings Screen Events ─────────────────────────────────────────────────
   const apiProviders = document.getElementsByName('api-provider');
@@ -2834,6 +4000,81 @@ function attachEventListeners() {
       });
     }
   }
+
+  // ── Guided App Tour Event Listeners ──────────────────────────────────────
+  const btnTourNext = document.getElementById('btn-tour-next');
+  if (btnTourNext) {
+    btnTourNext.addEventListener('click', () => {
+      const step = state.tourStep;
+      if (step === 1) {
+        if (state.foodEntries.length === 0 && state.exerciseEntries.length === 0) {
+          simulateOnboardingTestLog();
+        }
+        state.tourStep = 2;
+      } else if (step === 2) {
+        state.tourStep = 3;
+      } else if (step === 3) {
+        state.tourStep = 4;
+      } else if (step === 4) {
+        state.tourStep = 5;
+      } else if (step === 5) {
+        state.isTourActive = false;
+        state.tourStep = 0;
+        state.isSidebarOpen = false;
+        showToast("Tour completed! Enjoy tracking your health parameters.", "success");
+      }
+      saveStateToStorage();
+      mountApp();
+    });
+  }
+
+  const btnTourPrev = document.getElementById('btn-tour-prev');
+  if (btnTourPrev) {
+    btnTourPrev.addEventListener('click', () => {
+      state.tourStep = Math.max(1, state.tourStep - 1);
+      // If they go back from step 5, close the sidebar
+      if (state.tourStep < 5) {
+        state.isSidebarOpen = false;
+      }
+      saveStateToStorage();
+      mountApp();
+    });
+  }
+
+  const btnTourSkip = document.getElementById('btn-tour-skip');
+  if (btnTourSkip) {
+    btnTourSkip.addEventListener('click', () => {
+      state.isTourActive = false;
+      state.tourStep = 0;
+      state.isSidebarOpen = false;
+      saveStateToStorage();
+      mountApp();
+      showToast("Tour skipped. You can replay it anytime from settings.", "info");
+    });
+  }
+
+  const btnTourFill = document.getElementById('btn-tour-fill');
+  if (btnTourFill) {
+    btnTourFill.addEventListener('click', () => {
+      simulateOnboardingTestLog();
+      state.tourStep = 2;
+      saveStateToStorage();
+      mountApp();
+    });
+  }
+
+  const btnStartTour = document.getElementById('btn-start-tour');
+  if (btnStartTour) {
+    btnStartTour.addEventListener('click', () => {
+      state.isTourActive = true;
+      state.tourStep = 1;
+      state.currentScreen = 'chat';
+      state.isSidebarOpen = false;
+      saveStateToStorage();
+      mountApp();
+      showToast("Welcome to the Guided App Tour!", "success");
+    });
+  }
 }
 
 let factInterval = null;
@@ -2984,16 +4225,30 @@ function renderDietPlannerScreen() {
 
               <!-- Meals list -->
               <div style="display: flex; flex-direction: column; gap: 12px; padding: 0 16px 16px 16px;">
-                ${plan.meals.map(meal => `
-                  <div style="background-color: var(--surface-variant); border-radius: 12px; padding: 14px 16px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px;">
-                    <div style="display: flex; flex-direction: column; gap: 4px; flex: 1;">
-                      <span style="font-weight: 800; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--primary);">${meal.type}</span>
-                      <span style="font-weight: 700; font-size: 0.95rem; color: var(--on-surface);">${meal.name}</span>
-                      <span style="font-size: 0.74rem; color: var(--on-surface-variant); font-weight: 500;">🥩 ${meal.macros}</span>
+                ${plan.meals.map(meal => {
+                  const isLogged = /\[already eaten\]/i.test(meal.name);
+                  const displayName = meal.name.replace(/\[already eaten\]/i, '').trim();
+                  const cardStyle = isLogged 
+                    ? `background-color: var(--surface-variant); border-radius: 12px; padding: 14px 16px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px; opacity: 0.7; border-left: 4px solid var(--success);`
+                    : `background-color: var(--surface-variant); border-radius: 12px; padding: 14px 16px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px;`;
+                  
+                  const badgeHtml = isLogged
+                    ? `<span style="background-color: var(--success); color: white; font-size: 0.65rem; font-weight: 800; padding: 2px 6px; border-radius: 4px; margin-left: 8px; display: inline-flex; align-items: center; gap: 2px; vertical-align: middle;">✓ LOGGED</span>`
+                    : '';
+
+                  return `
+                    <div style="${cardStyle}">
+                      <div style="display: flex; flex-direction: column; gap: 4px; flex: 1;">
+                        <span style="font-weight: 800; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--primary);">
+                          ${meal.type} ${badgeHtml}
+                        </span>
+                        <span style="font-weight: 700; font-size: 0.95rem; color: var(--on-surface);">${displayName}</span>
+                        <span style="font-size: 0.74rem; color: var(--on-surface-variant); font-weight: 500;">🥩 ${meal.macros}</span>
+                      </div>
+                      <span style="font-weight: 800; font-size: 1rem; color: var(--primary); flex-shrink: 0; white-space: nowrap;">${meal.calories} kcal</span>
                     </div>
-                    <span style="font-weight: 800; font-size: 1rem; color: var(--primary); flex-shrink: 0; white-space: nowrap;">${meal.calories} kcal</span>
-                  </div>
-                `).join('')}
+                  `;
+                }).join('')}
               </div>
             </div>
           </div>
@@ -3289,6 +4544,38 @@ async function generateDailyDietPlan() {
     return;
   }
 
+  const loggedFoods = state.foodEntries.filter(f => f.dateStr === targetDateStr);
+  let loggedFoodsContext = '';
+  if (loggedFoods.length > 0) {
+    const foodsDescription = loggedFoods.map(f => {
+      const timeStr = f.timestamp ? new Date(f.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      const timeInfo = timeStr ? `, logged at: ${timeStr}` : '';
+      return `- ${f.name} (${f.calories} kcal, Protein: ${f.proteinG}g, Carbs: ${f.carbsG}g, Fat: ${f.fatG}g, serving: ${f.servingSize || '1 portion'}${timeInfo})`;
+    }).join('\n');
+
+    loggedFoodsContext = `
+The user has already eaten and logged the following food items today:
+${foodsDescription}
+
+You MUST follow these rules:
+1. Incorporate all these logged food items into the daily meal plan. Classify them into the most appropriate meal type slot(s) of Breakfast, Lunch, Snack, or Dinner based on the food type and the time logged.
+2. For any meal slot that contains one or more already eaten food items:
+   - Set the meal 'name' to the name of the eaten food followed by " [Already Eaten]" (e.g. "Toast and Eggs [Already Eaten]"). If multiple food items belong to the same meal type (e.g., eaten at the same time), group them into a single meal type slot (e.g., "Boiled Eggs and Toast [Already Eaten]") and sum their calories and macros.
+   - Use the exact summed calories and macros of the logged food items for that meal.
+3. For the remaining meal slots (the ones the user has NOT eaten yet today), plan appropriate new suggestions to complete the 4-meal plan.
+4. Scale the calories and macros of the new recommendations so that the overall day's totals (sum of already eaten meals + new recommendations) align as closely as possible to the user's daily target:
+   - Target Calories: ${state.dietCalorieGoal} kcal (±100)
+   - Macros: ~25% Protein, ~50% Carbs, ~25% Fat
+   (If the already eaten items already meet or exceed the target, suggest very light or zero-calorie items like green tea, cucumber slices, or clear broth for the remaining planned slots so that the plan still has exactly 4 meals but does not exceed the budget more than necessary).
+`;
+  } else {
+    loggedFoodsContext = `
+No foods have been logged yet today. Generate a full, balanced single-day meal plan for Breakfast, Lunch, Snack, and Dinner fitting the target:
+- Target: ${state.dietCalorieGoal} kcal (±100)
+- Macros: ~25% Protein, ~50% Carbs, ~25% Fat
+`;
+  }
+
   const dietPrompt = `
 You are a professional nutritionist. Generate a single-day meal plan:
 - Date: ${targetDateStr} (${dayName})
@@ -3298,7 +4585,9 @@ You are a professional nutritionist. Generate a single-day meal plan:
 - Macros: ~25% Protein, ~50% Carbs, ~25% Fat
 - Exactly 4 meals: Breakfast, Lunch, Snack, Dinner.
 
-CRITICAL: Keep meal "name" fields SHORT (max 12 words). No lengthy descriptions.
+${loggedFoodsContext}
+
+CRITICAL: Keep meal "name" fields SHORT (max 12 words). No lengthy descriptions. Ensure that any meal representing already eaten foods has its name end exactly with " [Already Eaten]".
 
 Return ONLY valid JSON matching this schema:
 {"success":true,"dateStr":"${targetDateStr}","dayName":"${dayName}","totalCalories":1980,"protein_g":120,"carbs_g":220,"fat_g":60,"meals":[{"type":"Breakfast","name":"Short meal name here","calories":400,"macros":"P: 25g, C: 45g, F: 12g"},{"type":"Lunch","name":"Short meal name here","calories":600,"macros":"P: 35g, C: 70g, F: 20g"},{"type":"Snack","name":"Short meal name here","calories":250,"macros":"P: 15g, C: 30g, F: 8g"},{"type":"Dinner","name":"Short meal name here","calories":730,"macros":"P: 45g, C: 75g, F: 20g"}]}
@@ -3368,6 +4657,7 @@ Return ONLY valid JSON:
 }
 
 async function generateWeeklyAIInsights(tabIndex) {
+  tabIndex = parseInt(tabIndex) || 0;
   if (!state.apiKey) {
     showToast("Please add your Gemini API Key in Settings to generate AI insights!", "error");
     return;
@@ -3487,6 +4777,7 @@ window.addEventListener('unhandledrejection', function(e) {
 // Mount app on initial load
 console.log("Daywise Web App Initialized Successfully!");
 try {
+  syncAlarmsToNative();
   mountApp();
 } catch(e) {
   showFatalError('MOUNT ERROR:\n' + e.message + '\n\n' + (e.stack || ''));
