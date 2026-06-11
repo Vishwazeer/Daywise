@@ -6,6 +6,11 @@ import {
   callOpenRouterGeneric, 
   DEFAULT_OPENROUTER_MODELS 
 } from './openrouter.js';
+import {
+  parseInputWithNvidia,
+  callNvidiaGeneric,
+  DEFAULT_NVIDIA_MODELS
+} from './nvidia.js';
 import donateQrBase64 from './donate_qr_base64.txt?raw';
 import { injectSpeedInsights } from '@vercel/speed-insights';
 
@@ -67,6 +72,8 @@ const state = {
   apiProvider: localStorage.getItem('apiProvider') || 'gemini',
   openRouterApiKey: localStorage.getItem('openRouterApiKey') || '',
   openRouterModel: localStorage.getItem('openRouterModel') || 'meta-llama/llama-3.3-70b-instruct:free',
+  nvidiaApiKey: localStorage.getItem('nvidiaApiKey') || '',
+  nvidiaModel: localStorage.getItem('nvidiaModel') || 'meta/llama-3.2-11b-vision-instruct',
 
   // Selected Chat Date
   selectedDateStr: getLocalDateString(new Date()),
@@ -183,6 +190,8 @@ function saveStateToStorage() {
   localStorage.setItem('apiProvider', state.apiProvider);
   localStorage.setItem('openRouterApiKey', state.openRouterApiKey);
   localStorage.setItem('openRouterModel', state.openRouterModel);
+  localStorage.setItem('nvidiaApiKey', state.nvidiaApiKey);
+  localStorage.setItem('nvidiaModel', state.nvidiaModel);
   localStorage.setItem('foodEntries', JSON.stringify(state.foodEntries));
   localStorage.setItem('exerciseEntries', JSON.stringify(state.exerciseEntries));
   localStorage.setItem('weightEntries', JSON.stringify(state.weightEntries));
@@ -416,6 +425,14 @@ async function parseInputWithGemini(userText, imageFileObj = null) {
       return simulateMockParsing(userText, imageFileObj);
     }
     return parseInputWithOpenRouter(userText, state.openRouterApiKey, state.openRouterModel, SYSTEM_PROMPT, cleanAndParseJSON, imageFileObj);
+  }
+
+  // Direct NVIDIA API routing
+  if (state.apiProvider === 'nvidia') {
+    if (!state.nvidiaApiKey) {
+      return simulateMockParsing(userText, imageFileObj);
+    }
+    return parseInputWithNvidia(userText, state.nvidiaApiKey, state.nvidiaModel, SYSTEM_PROMPT, cleanAndParseJSON, imageFileObj);
   }
 
   // Direct, real image analysis path (for Gemini)
@@ -2309,7 +2326,7 @@ function renderSettingsScreen() {
 
         <div class="form-group" style="margin-top: 12px; margin-bottom: 8px;">
           <label>API Provider</label>
-          <div style="display: flex; gap: 16px; margin-top: 4px;">
+          <div style="display: flex; gap: 12px; margin-top: 4px; flex-wrap: wrap;">
             <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; text-transform: none; font-size: 0.9rem; font-weight: 500;">
               <input type="radio" name="api-provider" value="gemini" ${state.apiProvider === 'gemini' ? 'checked' : ''} style="cursor: pointer;" />
               Google Gemini
@@ -2317,6 +2334,10 @@ function renderSettingsScreen() {
             <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; text-transform: none; font-size: 0.9rem; font-weight: 500;">
               <input type="radio" name="api-provider" value="openrouter" ${state.apiProvider === 'openrouter' ? 'checked' : ''} style="cursor: pointer;" />
               OpenRouter (Test)
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; text-transform: none; font-size: 0.9rem; font-weight: 500;">
+              <input type="radio" name="api-provider" value="nvidia" ${state.apiProvider === 'nvidia' ? 'checked' : ''} style="cursor: pointer;" />
+              NVIDIA API
             </label>
           </div>
         </div>
@@ -2337,7 +2358,7 @@ function renderSettingsScreen() {
               <option value="gemini-3.1-flash-lite" ${state.geminiModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>gemini-3.1-flash-lite (Ultra-light / cheapest)</option>
             </select>
           </div>
-        ` : `
+        ` : state.apiProvider === 'openrouter' ? `
           <div class="form-group" style="position: relative; margin-top: 12px;">
             <label>OpenRouter API Key</label>
             <input type="password" id="settings-openrouter-key" class="input-style" value="${state.openRouterApiKey}" placeholder="Paste your OpenRouter API Key here..." />
@@ -2347,6 +2368,19 @@ function renderSettingsScreen() {
             <select id="settings-openrouter-model" class="input-style" style="background-color: var(--surface); color: var(--on-surface); border: 1.5px solid var(--border-visible); border-radius: var(--radius-sm); padding: 8px; width: 100%;">
               ${DEFAULT_OPENROUTER_MODELS.map(m => `
                 <option value="${m.id}" ${state.openRouterModel === m.id ? 'selected' : ''}>${m.name}</option>
+              `).join('')}
+            </select>
+          </div>
+        ` : `
+          <div class="form-group" style="position: relative; margin-top: 12px;">
+            <label>NVIDIA API Key</label>
+            <input type="password" id="settings-nvidia-key" class="input-style" value="${state.nvidiaApiKey}" placeholder="Paste your NVIDIA API Key here..." />
+          </div>
+          <div class="form-group" style="margin-top: 12px;">
+            <label>NVIDIA Model</label>
+            <select id="settings-nvidia-model" class="input-style" style="background-color: var(--surface); color: var(--on-surface); border: 1.5px solid var(--border-visible); border-radius: var(--radius-sm); padding: 8px; width: 100%;">
+              ${DEFAULT_NVIDIA_MODELS.map(m => `
+                <option value="${m.id}" ${state.nvidiaModel === m.id ? 'selected' : ''}>${m.name}</option>
               `).join('')}
             </select>
           </div>
@@ -3874,6 +3908,22 @@ function attachEventListeners() {
     });
   }
 
+  const nvidiaKey = document.getElementById('settings-nvidia-key');
+  if (nvidiaKey) {
+    nvidiaKey.addEventListener('input', (e) => {
+      state.nvidiaApiKey = e.target.value.trim();
+      saveStateToStorage();
+    });
+  }
+
+  const nvidiaModelSel = document.getElementById('settings-nvidia-model');
+  if (nvidiaModelSel) {
+    nvidiaModelSel.addEventListener('change', (e) => {
+      state.nvidiaModel = e.target.value;
+      saveStateToStorage();
+    });
+  }
+
 
 
   const btnResetOnboarding = document.getElementById('btn-reset-onboarding');
@@ -4501,6 +4551,13 @@ async function callGeminiGeneric(prompt) {
       throw new Error("OpenRouter API Key not configured in Settings.");
     }
     return callOpenRouterGeneric(prompt, state.openRouterApiKey, state.openRouterModel);
+  }
+
+  if (state.apiProvider === 'nvidia') {
+    if (!state.nvidiaApiKey) {
+      throw new Error("NVIDIA API Key not configured in Settings.");
+    }
+    return callNvidiaGeneric(prompt, state.nvidiaApiKey, state.nvidiaModel);
   }
 
   const modelList = getModelExecutionList(state.geminiModel);
