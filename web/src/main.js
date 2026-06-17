@@ -7,10 +7,12 @@ import {
   DEFAULT_OPENROUTER_MODELS 
 } from './openrouter.js';
 import donateQrBase64 from './donate_qr_base64.txt?raw';
+import { injectSpeedInsights } from '@vercel/speed-insights';
 
 // Clear localStorage on page load/refresh ONLY for the web version (bypassing for the Android App)
 if (typeof window.DaywiseAndroid === 'undefined') {
   localStorage.clear();
+  injectSpeedInsights();
 }
 
 // ── State Management ─────────────────────────────────────────────────────────
