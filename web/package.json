@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@openrouter/sdk": "^0.12.79",
+    "@vercel/speed-insights": "^2.0.0",
     "lucide": "^1.17.0"
   }
 }
