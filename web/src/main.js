@@ -8,6 +8,11 @@ import {
 } from './openrouter.js';
 import donateQrBase64 from './donate_qr_base64.txt?raw';
 
+// Clear localStorage on page load/refresh ONLY for the web version (bypassing for the Android App)
+if (typeof window.DaywiseAndroid === 'undefined') {
+  localStorage.clear();
+}
+
 // ── State Management ─────────────────────────────────────────────────────────
 const state = {
   currentScreen: localStorage.getItem('currentScreen') || 'chat',
