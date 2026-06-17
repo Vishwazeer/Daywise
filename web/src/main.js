@@ -2479,7 +2479,7 @@ function mountApp() {
   const appRoot = document.getElementById('app');
   appRoot.innerHTML = appLayoutTemplate();
   createIcons({ icons });
-  console.log("MOUNTED APP INNERHTML:", appRoot.innerHTML);
+  // console.log("MOUNTED APP INNERHTML:", appRoot.innerHTML);
   
   const screenBody = document.getElementById('screen-body');
   if (screenBody) {

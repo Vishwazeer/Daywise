@@ -354,6 +354,8 @@ fun WebViewScreen(
         @Suppress("DEPRECATION") databaseEnabled = true
         allowFileAccess = true
         allowContentAccess = true
+        allowFileAccessFromFileURLs = true
+        allowUniversalAccessFromFileURLs = true
         mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         useWideViewPort = true
         loadWithOverviewMode = true
@@ -368,8 +370,7 @@ fun WebViewScreen(
       if (useDevServer) {
         loadUrl("http://10.116.225.39:6272/")
       } else {
-        val html = context.assets.open("index.html").bufferedReader().use { it.readText() }
-        loadDataWithBaseURL("https://appassets.androidplatform.net/", html, "text/html", "UTF-8", null)
+        loadUrl("file:///android_asset/index.html")
       }
     }
   })

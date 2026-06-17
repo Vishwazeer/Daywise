@@ -10,8 +10,17 @@ export const DEFAULT_NVIDIA_MODELS = [
   { id: 'meta/llama-3.2-11b-vision-instruct', name: 'Llama 3.2 11B Vision (Vision / Default)', vision: true },
   { id: 'meta/llama-3.2-90b-vision-instruct', name: 'Llama 3.2 90B Vision (Vision / Powerful)', vision: true },
   { id: 'nvidia/cosmos-reason2-8b', name: 'Cosmos Reason2 8B (Vision / NVIDIA)', vision: true },
+  { id: 'microsoft/phi-3.5-vision-instruct', name: 'Phi 3.5 Vision (Vision / Microsoft)', vision: true },
   { id: 'meta/llama-3.3-70b-instruct', name: 'Llama 3.3 70B Instruct (Text)' },
-  { id: 'nvidia/llama-3.1-nemotron-70b-instruct', name: 'Llama 3.1 Nemotron 70B Instruct (Text)' }
+  { id: 'nvidia/llama-3.1-nemotron-70b-instruct', name: 'Llama 3.1 Nemotron 70B Instruct (Text)' },
+  { id: 'google/gemma-2-2b-it', name: 'Gemma 2 2B Instruct (Text / Google)' },
+  { id: 'google/gemma-2-9b-it', name: 'Gemma 2 9B Instruct (Text / Google)' },
+  { id: 'google/gemma-3-27b-it', name: 'Gemma 3 27B Instruct (Text / Google)' },
+  { id: 'microsoft/phi-3.5-mini-instruct', name: 'Phi 3.5 Mini Instruct (Text / Microsoft)' },
+  { id: 'meta/llama-3.1-8b-instruct', name: 'Llama 3.1 8B Instruct (Text / Meta)' },
+  { id: 'meta/llama-3.1-405b-instruct', name: 'Llama 3.1 405B Instruct (Text / Meta / Massive)' },
+  { id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B Instruct (Text / OpenAI / MoE)' },
+  { id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B Instruct (Text / OpenAI / MoE)' }
 ];
 
 function getNvidiaFallbackList(preferredModel, isImage = false) {
@@ -20,7 +29,8 @@ function getNvidiaFallbackList(preferredModel, isImage = false) {
   const ids = filteredModels.map(m => m.id);
   const list = [];
   
-  if (preferredModel && ids.includes(preferredModel)) {
+  // Always prioritize the selected model first if it exists, regardless of the isImage filter!
+  if (preferredModel) {
     list.push(preferredModel);
   }
   
@@ -52,6 +62,7 @@ async function handleNvidiaApiError(response) {
 export async function callNvidiaCompletionWithFallback(prompt, apiKey, preferredModel, responseFormatJson = false, imageFileObj = null) {
   const isImage = !!imageFileObj;
   const modelList = getNvidiaFallbackList(preferredModel, isImage);
+  console.info(`NVIDIA preferred model: ${preferredModel}. Fallback order: ${modelList.join(', ')}`);
   let lastError = null;
 
   // Construct message content
