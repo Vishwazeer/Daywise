@@ -131,4 +131,4 @@ Daywise places absolute control in the hands of the user:
 ---
 
 ## 📄 License
-This software and associated documentation files are proprietary and confidential. Refer to the [LICENSE](./LICENSE) file for more information.
+This project is licensed under the [MIT License](./LICENSE).
