@@ -16,7 +16,7 @@ import { injectSpeedInsights } from '@vercel/speed-insights';
 
 // Clear localStorage on page load/refresh ONLY for the web version (bypassing for the Android App)
 if (typeof window.DaywiseAndroid === 'undefined') {
-  localStorage.clear();
+  // localStorage.clear(); // Disabled to allow persistence of preview state for a better experience
   injectSpeedInsights();
 }
 
@@ -2618,10 +2618,13 @@ function attachEventListeners() {
   const btnThemeToggle = document.getElementById('btn-theme-toggle');
   if (btnThemeToggle) {
     btnThemeToggle.addEventListener('click', () => {
+      btnThemeToggle.classList.add('theme-spin');
       state.theme = state.theme === 'light' ? 'dark' : 'light';
       localStorage.setItem('theme', state.theme);
       document.documentElement.setAttribute('data-theme', state.theme);
-      mountApp();
+      setTimeout(() => {
+        mountApp();
+      }, 180);
     });
   }
 
